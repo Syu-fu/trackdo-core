@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5e106837482e84dd0087d86ad286ada451b05a4e01978ab583b8a7eb352b2af6 # shrinks to clock = Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) }, now = 0
+cc dcf59c61303b9e39cdd9e1c09c7d704454b85119d5ac5e160dcda3a03386f08a # shrinks to local = Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) }, remote = Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) }, now = 0
