@@ -2,3 +2,5 @@
 
 pub mod hlc;
 pub mod lww;
+pub mod task;
+pub mod title;
