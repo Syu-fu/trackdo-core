@@ -7,6 +7,10 @@ use crate::task::{FieldChange, TaskId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpId(pub u128);
 
+/// Server-assigned position in the operation log. Strictly increasing per user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Seq(pub u64);
+
 /// A write of one task field at one point in time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Op {
