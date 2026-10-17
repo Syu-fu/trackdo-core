@@ -190,7 +190,7 @@ mod tests {
     }
 
     fn write() -> impl Strategy<Value = (FieldChange, Hlc)> {
-        (change(), 0u64..4, 0u32..2, 0u64..3).prop_map(|(change, wall, counter, device)| {
+        (change(), 0u64..4, 0u32..2, 0u128..3).prop_map(|(change, wall, counter, device)| {
             (change, Hlc::new(wall, counter, DeviceId(device)))
         })
     }

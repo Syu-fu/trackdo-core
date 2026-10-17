@@ -99,7 +99,7 @@ mod tests {
 
     // Small domains so that timestamp ties are actually exercised.
     fn register() -> impl Strategy<Value = Lww<u8>> {
-        (0u64..3, 0u32..3, 0u64..3, 0u8..3).prop_map(|(wall, counter, device, value)| {
+        (0u64..3, 0u32..3, 0u128..3, 0u8..3).prop_map(|(wall, counter, device, value)| {
             Lww::new(value, Hlc::new(wall, counter, DeviceId(device)))
         })
     }

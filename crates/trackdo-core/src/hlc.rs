@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Identifies the replica that produced a timestamp. Breaks ties between
 /// timestamps with identical `wall_ms` and `counter`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeviceId(pub u64);
+pub struct DeviceId(pub u128);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Hlc {
@@ -179,7 +179,7 @@ mod tests {
     }
 
     fn hlc() -> impl Strategy<Value = Hlc> {
-        (0u64..1_000, 0u32..1_000, 0u64..4)
+        (0u64..1_000, 0u32..1_000, 0u128..4)
             .prop_map(|(wall, counter, device)| Hlc::new(wall, counter, DeviceId(device)))
     }
 
