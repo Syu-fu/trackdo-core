@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3104051afb8486cb3c0ec31bfa94b6207a8fb63588f38c2606eea4ce23367ea9 # shrinks to a = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }, b = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }
+cc 08fed502d636339c4ce8acc8f8c89133b6600bdb3d3835327b90ba2db9afb5f1 # shrinks to a = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }, b = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }
+cc 65681fedd2a93052ce8e77fb3d6b267587eb5cae74dcc6bd137b040422a9eaf0 # shrinks to a = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }, b = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }
+cc 0fa3c164c68f6c9e5460c6e42f6fce2a6b8a648afbea300d220fa42c3ec7aa48 # shrinks to a = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }, b = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }, c = Lww { value: 0, hlc: Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) } }
