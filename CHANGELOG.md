@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Time tracking commands on `Replica`: `start`, `stop`, `edit_times`,
   `delete_entry` and `add_entry`. Starting a timer stops the running one,
   times may not lie in the future, and an entry never stops before it starts.
+- Completing or deleting a task stops its running timer, and starting a timer
+  on a done task reopens it.
 - Time entry operations on the wire:
   `"target": { "type": "time_entry", "entry_id", "task_id", "change" }`.
 

@@ -3,28 +3,32 @@
 use super::{CommandError, Replica};
 use crate::env::{Clock, IdGen};
 use crate::op::OpTarget;
-use crate::task::TaskId;
+use crate::task::{TaskChange, TaskId, TaskStatus};
 use crate::time_entry::{TimeEntry, TimeEntryChange, TimeEntryId, Timestamp};
 
 impl<C: Clock, G: IdGen> Replica<C, G> {
     /// Starts a timer on `task_id`, stopping any running timer at the same
-    /// instant so that at most one runs at a time.
+    /// instant so that at most one runs at a time. Working on a done task
+    /// reopens it.
     pub fn start(&mut self, task_id: TaskId) -> Result<TimeEntryId, CommandError> {
         self.ensure_editable(task_id)?;
         let now = self.now();
-        let stops: Vec<_> = self
-            .entries
-            .values()
-            .filter(|entry| entry.is_running() && !entry.is_deleted())
-            .map(|entry| stop_target(entry, now))
-            .collect();
+        let stops = self.stop_running(now, |_| true);
         let id = self.ids.time_entry_id();
         let starts = [
             TimeEntryChange::StartedAt(now),
             TimeEntryChange::StoppedAt(None),
         ]
         .map(|change| entry_target(id, task_id, change));
-        self.emit(stops.into_iter().chain(starts).collect())?;
+        let reopen = self
+            .tasks
+            .get(&task_id)
+            .is_some_and(|task| task.status() == TaskStatus::Done)
+            .then_some(OpTarget::Task {
+                task_id,
+                change: TaskChange::Status(TaskStatus::Todo),
+            });
+        self.emit(stops.into_iter().chain(starts).chain(reopen).collect())?;
         Ok(id)
     }
 
@@ -91,8 +95,21 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         Ok(id)
     }
 
-    fn now(&self) -> Timestamp {
+    pub(super) fn now(&self) -> Timestamp {
         Timestamp(self.clock.now_millis())
+    }
+
+    /// Operations stopping every running entry that `matches`.
+    pub(super) fn stop_running(
+        &self,
+        now: Timestamp,
+        matches: impl Fn(&TimeEntry) -> bool,
+    ) -> Vec<OpTarget> {
+        self.entries
+            .values()
+            .filter(|entry| entry.is_running() && !entry.is_deleted() && matches(entry))
+            .map(|entry| stop_target(entry, now))
+            .collect()
     }
 
     fn editable_entry(&self, id: TimeEntryId) -> Result<TimeEntry, CommandError> {
@@ -550,5 +567,70 @@ mod tests {
         let restored = Replica::restore(state, FixedClock(NOW), SequentialIds(1_000));
 
         assert_eq!(restored.state(), stopped);
+    }
+
+    #[test]
+    fn complete_stops_running_timer_of_the_task() {
+        let (mut replica, task) = with_task();
+        let id = replica.start(task).unwrap();
+        set_now(&mut replica, NOW + 1_000);
+
+        replica.complete(task).unwrap();
+
+        assert_eq!(
+            replica.time_entry(id).unwrap().stopped_at(),
+            Some(ms(NOW + 1_000))
+        );
+        assert_eq!(replica.task(task).unwrap().status(), TaskStatus::Done);
+    }
+
+    #[test]
+    fn complete_leaves_timer_of_another_task_running() {
+        let (mut replica, task) = with_task();
+        let other = replica.create("other").unwrap();
+        let id = replica.start(other).unwrap();
+
+        replica.complete(task).unwrap();
+
+        assert_eq!(running(&replica), vec![id]);
+    }
+
+    #[test]
+    fn delete_stops_running_timer_of_the_task() {
+        let (mut replica, task) = with_task();
+        let id = replica.start(task).unwrap();
+        set_now(&mut replica, NOW + 1_000);
+
+        replica.delete(task).unwrap();
+
+        assert_eq!(
+            replica.time_entry(id).unwrap().stopped_at(),
+            Some(ms(NOW + 1_000))
+        );
+        assert!(replica.task(task).unwrap().is_deleted());
+    }
+
+    #[test]
+    fn start_on_done_task_reopens_it() {
+        let (mut replica, task) = with_task();
+        replica.complete(task).unwrap();
+
+        replica.start(task).unwrap();
+
+        assert_eq!(replica.task(task).unwrap().status(), TaskStatus::Todo);
+        assert_eq!(
+            changes(&replica).last(),
+            Some(&TaskChange::Status(TaskStatus::Todo))
+        );
+    }
+
+    #[test]
+    fn start_on_todo_task_leaves_status_untouched() {
+        let (mut replica, task) = with_task();
+        let before = changes(&replica);
+
+        replica.start(task).unwrap();
+
+        assert_eq!(changes(&replica), before);
     }
 }

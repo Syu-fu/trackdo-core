@@ -2,6 +2,7 @@
 
 use super::{CommandError, Replica};
 use crate::env::{Clock, IdGen};
+use crate::op::OpTarget;
 use crate::task::{TaskChange, TaskId, TaskStatus};
 use crate::title::Title;
 
@@ -25,9 +26,10 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.emit_task(id, vec![TaskChange::Title(title)])
     }
 
+    /// Also stops the task's running timer.
     pub fn complete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit_task(id, vec![TaskChange::Status(TaskStatus::Done)])
+        self.stop_timer_and_emit(id, TaskChange::Status(TaskStatus::Done))
     }
 
     pub fn reopen(&mut self, id: TaskId) -> Result<(), CommandError> {
@@ -35,9 +37,19 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.emit_task(id, vec![TaskChange::Status(TaskStatus::Todo)])
     }
 
+    /// Also stops the task's running timer.
     pub fn delete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit_task(id, vec![TaskChange::Deleted(true)])
+        self.stop_timer_and_emit(id, TaskChange::Deleted(true))
+    }
+
+    fn stop_timer_and_emit(&mut self, id: TaskId, change: TaskChange) -> Result<(), CommandError> {
+        let stops = self.stop_running(self.now(), |entry| entry.task_id() == id);
+        let task = OpTarget::Task {
+            task_id: id,
+            change,
+        };
+        self.emit(stops.into_iter().chain([task]).collect())
     }
 }
 
@@ -45,7 +57,6 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
 mod tests {
     use super::super::test_support::*;
     use super::*;
-    use crate::op::OpTarget;
     use crate::title::TitleError;
 
     #[test]
