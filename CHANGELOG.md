@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-17
+
 ### Added
 
 - `trackdo-core`
@@ -22,3 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `trackdo-protocol`
   - JSON wire format for operations and snapshots, with validation on decode.
   - `PROTOCOL_VERSION` = 1.
+
+[Unreleased]: https://github.com/Syu-fu/trackdo-core/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Syu-fu/trackdo-core/releases/tag/v0.1.0
