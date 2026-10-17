@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::hlc::Hlc;
-use crate::lww::{Lww, write};
+use crate::lww::{Lww, join, write};
 use crate::task::TaskId;
 
 /// Wall-clock instant as milliseconds since the Unix epoch, in UTC.
@@ -113,6 +113,19 @@ impl TimeEntry {
                 deleted: Some(write(&self.deleted, *deleted, hlc)),
                 ..self.clone()
             },
+        }
+    }
+
+    /// Field-wise join with another copy of the same entry.
+    pub(crate) fn merge(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.id, other.id, "merging different entries");
+        debug_assert_eq!(self.task_id, other.task_id, "entry moved between tasks");
+        Self {
+            id: self.id,
+            task_id: self.task_id,
+            started_at: join(&self.started_at, &other.started_at),
+            stopped_at: join(&self.stopped_at, &other.stopped_at),
+            deleted: join(&self.deleted, &other.deleted),
         }
     }
 }

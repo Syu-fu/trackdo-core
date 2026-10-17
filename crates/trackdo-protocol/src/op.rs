@@ -6,6 +6,7 @@ use uuid::Uuid;
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::op::{Op, OpId, OpTarget};
 use trackdo_core::task::{TaskChange, TaskId, TaskStatus};
+use trackdo_core::time_entry::{TimeEntryChange, TimeEntryId, Timestamp};
 
 use crate::error::{ProtocolError, decode_title};
 
@@ -23,6 +24,11 @@ pub enum OpTargetDto {
         task_id: Uuid,
         change: TaskChangeDto,
     },
+    TimeEntry {
+        entry_id: Uuid,
+        task_id: Uuid,
+        change: TimeEntryChangeDto,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +43,16 @@ pub struct HlcDto {
 pub enum TaskChangeDto {
     Title(String),
     Status(TaskStatusDto),
+    Deleted(bool),
+}
+
+/// Times are milliseconds since the Unix epoch, in UTC. `stopped_at: null`
+/// means the timer is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "field", content = "value", rename_all = "snake_case")]
+pub enum TimeEntryChangeDto {
+    StartedAt(u64),
+    StoppedAt(Option<u64>),
     Deleted(bool),
 }
 
@@ -76,6 +92,15 @@ impl From<&OpTarget> for OpTargetDto {
                 task_id: Uuid::from_u128(task_id.0),
                 change: TaskChangeDto::from(change),
             },
+            OpTarget::TimeEntry {
+                entry_id,
+                task_id,
+                change,
+            } => Self::TimeEntry {
+                entry_id: Uuid::from_u128(entry_id.0),
+                task_id: Uuid::from_u128(task_id.0),
+                change: TimeEntryChangeDto::from(change),
+            },
         }
     }
 }
@@ -88,6 +113,15 @@ impl TryFrom<OpTargetDto> for OpTarget {
             OpTargetDto::Task { task_id, change } => Ok(Self::Task {
                 task_id: TaskId(task_id.as_u128()),
                 change: TaskChange::try_from(change)?,
+            }),
+            OpTargetDto::TimeEntry {
+                entry_id,
+                task_id,
+                change,
+            } => Ok(Self::TimeEntry {
+                entry_id: TimeEntryId(entry_id.as_u128()),
+                task_id: TaskId(task_id.as_u128()),
+                change: TimeEntryChange::from(change),
             }),
         }
     }
@@ -127,6 +161,28 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Title(raw) => Ok(Self::Title(decode_title(&raw)?)),
             TaskChangeDto::Status(status) => Ok(Self::Status(TaskStatus::from(status))),
             TaskChangeDto::Deleted(deleted) => Ok(Self::Deleted(deleted)),
+        }
+    }
+}
+
+impl From<&TimeEntryChange> for TimeEntryChangeDto {
+    fn from(change: &TimeEntryChange) -> Self {
+        match change {
+            TimeEntryChange::StartedAt(Timestamp(started)) => Self::StartedAt(*started),
+            TimeEntryChange::StoppedAt(stopped) => {
+                Self::StoppedAt(stopped.map(|Timestamp(stopped)| stopped))
+            }
+            TimeEntryChange::Deleted(deleted) => Self::Deleted(*deleted),
+        }
+    }
+}
+
+impl From<TimeEntryChangeDto> for TimeEntryChange {
+    fn from(dto: TimeEntryChangeDto) -> Self {
+        match dto {
+            TimeEntryChangeDto::StartedAt(started) => Self::StartedAt(Timestamp(started)),
+            TimeEntryChangeDto::StoppedAt(stopped) => Self::StoppedAt(stopped.map(Timestamp)),
+            TimeEntryChangeDto::Deleted(deleted) => Self::Deleted(deleted),
         }
     }
 }
@@ -213,6 +269,69 @@ mod tests {
         insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Deleted(true))));
     }
 
+    const ENTRY: TimeEntryId = TimeEntryId(0x0192_8f3a_0000_7000_8000_0000_0000_0e01);
+
+    fn entry_op(change: TimeEntryChange) -> Op {
+        let task = op(TaskChange::Deleted(false));
+        Op::time_entry(
+            task.op_id,
+            ENTRY,
+            TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0001),
+            task.hlc,
+            change,
+        )
+    }
+
+    fn entry_wire(change: serde_json::Value) -> serde_json::Value {
+        let mut json = wire(serde_json::Value::Null);
+        json["target"] = serde_json::json!({
+            "type": "time_entry",
+            "entry_id": "01928f3a-0000-7000-8000-000000000e01",
+            "task_id": "01928f3a-0000-7000-8000-000000000001",
+            "change": change,
+        });
+        json
+    }
+
+    #[test]
+    fn started_at_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&entry_op(TimeEntryChange::StartedAt(
+            Timestamp(1_730_000_000_000)
+        ))));
+    }
+
+    #[test]
+    fn stopped_at_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&entry_op(TimeEntryChange::StoppedAt(Some(
+            Timestamp(1_730_000_360_000)
+        )))));
+    }
+
+    #[test]
+    fn running_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&entry_op(TimeEntryChange::StoppedAt(None))));
+    }
+
+    #[test]
+    fn entry_deleted_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&entry_op(TimeEntryChange::Deleted(true))));
+    }
+
+    #[test]
+    fn decodes_running_entry_from_null_stop() {
+        let json = entry_wire(serde_json::json!({ "field": "stopped_at", "value": null }));
+
+        assert_eq!(decode(json), Ok(entry_op(TimeEntryChange::StoppedAt(None))));
+    }
+
+    #[test]
+    fn rejects_entry_op_without_task() {
+        let mut json = entry_wire(serde_json::json!({ "field": "deleted", "value": true }));
+        json["target"].as_object_mut().unwrap().remove("task_id");
+
+        assert!(serde_json::from_value::<OpDto>(json).is_err());
+    }
+
     #[test]
     fn decodes_wire_json() {
         let decoded = decode(wire(
@@ -254,7 +373,36 @@ mod tests {
         assert!(serde_json::from_value::<OpDto>(json).is_err());
     }
 
-    fn any_op() -> impl Strategy<Value = Op> {
+    fn any_entry_op() -> impl Strategy<Value = Op> {
+        let time = any::<u64>().prop_map(Timestamp);
+        let change = prop_oneof![
+            time.clone().prop_map(TimeEntryChange::StartedAt),
+            prop::option::of(time).prop_map(TimeEntryChange::StoppedAt),
+            any::<bool>().prop_map(TimeEntryChange::Deleted),
+        ];
+        (
+            any::<u128>(),
+            any::<u128>(),
+            any::<u128>(),
+            any::<u64>(),
+            any::<u32>(),
+            any::<u128>(),
+            change,
+        )
+            .prop_map(
+                |(op_id, entry_id, task_id, wall, counter, device, change)| {
+                    Op::time_entry(
+                        OpId(op_id),
+                        TimeEntryId(entry_id),
+                        TaskId(task_id),
+                        Hlc::new(wall, counter, DeviceId(device)),
+                        change,
+                    )
+                },
+            )
+    }
+
+    fn any_task_op() -> impl Strategy<Value = Op> {
         let change = prop_oneof![
             "[a-z]{1,8}( [a-z]{1,8})?".prop_map(|s| TaskChange::Title(title(&s))),
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])
@@ -281,7 +429,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn json_roundtrip_preserves_op(op in any_op()) {
+        fn json_roundtrip_preserves_op(op in prop_oneof![any_task_op(), any_entry_op()]) {
             prop_assert_eq!(roundtrip(&op), op);
         }
     }

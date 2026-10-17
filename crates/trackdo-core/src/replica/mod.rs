@@ -1,4 +1,5 @@
-//! A replica: local task state plus the operations not yet sent.
+//! A replica: local state of tasks and time entries plus the operations not
+//! yet sent.
 //!
 //! Commands validate user intent, emit operations and apply them locally at
 //! once, so the UI never waits on the network.
@@ -6,6 +7,7 @@
 mod task_commands;
 #[cfg(test)]
 mod test_support;
+mod time_commands;
 
 use std::collections::BTreeMap;
 
@@ -15,6 +17,7 @@ use crate::env::{Clock, IdGen};
 use crate::hlc::{DeviceId, Hlc, HlcError};
 use crate::op::{Op, OpId, OpTarget, Seq};
 use crate::task::{Task, TaskChange, TaskId};
+use crate::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 use crate::title::TitleError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -25,6 +28,19 @@ pub enum CommandError {
     NotFound(TaskId),
     #[error("task {0:?} is deleted")]
     Deleted(TaskId),
+    #[error("time entry {0:?} does not exist")]
+    EntryNotFound(TimeEntryId),
+    #[error("time entry {0:?} is deleted")]
+    EntryDeleted(TimeEntryId),
+    #[error("time entry {0:?} is not running")]
+    NotRunning(TimeEntryId),
+    #[error("stop time {stopped:?} precedes start time {started:?}")]
+    StopBeforeStart {
+        started: Timestamp,
+        stopped: Timestamp,
+    },
+    #[error("time {0:?} is in the future")]
+    InFuture(Timestamp),
     #[error(transparent)]
     Clock(#[from] HlcError),
 }
@@ -33,6 +49,14 @@ pub enum CommandError {
 pub enum RemoteError {
     #[error(transparent)]
     Clock(#[from] HlcError),
+    /// The server must never accept such an operation; the replica rejects it
+    /// rather than attributing the entry's time to two tasks.
+    #[error("time entry {entry:?} belongs to {expected:?}, not {actual:?}")]
+    TaskMismatch {
+        entry: TimeEntryId,
+        expected: TaskId,
+        actual: TaskId,
+    },
 }
 
 /// Everything a host must persist to restore a replica after a restart.
@@ -40,6 +64,7 @@ pub enum RemoteError {
 pub struct ReplicaState {
     pub hlc: Hlc,
     pub tasks: Vec<Task>,
+    pub time_entries: Vec<TimeEntry>,
     pub pending: Vec<Op>,
     pub last_seq: Option<Seq>,
 }
@@ -49,6 +74,7 @@ pub struct Replica<C, G> {
     ids: G,
     hlc: Hlc,
     tasks: BTreeMap<TaskId, Task>,
+    entries: BTreeMap<TimeEntryId, TimeEntry>,
     pending: Vec<Op>,
     last_seq: Option<Seq>,
 }
@@ -60,6 +86,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             ids,
             hlc: Hlc::zero(device),
             tasks: BTreeMap::new(),
+            entries: BTreeMap::new(),
             pending: Vec::new(),
             last_seq: None,
         }
@@ -67,22 +94,12 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
 
     /// Rebuilds a replica from a state previously returned by [`Self::state`].
     pub fn restore(state: ReplicaState, clock: C, ids: G) -> Self {
-        let tasks = state
-            .tasks
-            .into_iter()
-            .fold(BTreeMap::new(), |mut tasks, task| {
-                let merged = match tasks.remove(&task.id()) {
-                    Some(existing) => task.merge(&existing),
-                    None => task,
-                };
-                tasks.insert(merged.id(), merged);
-                tasks
-            });
         Self {
             clock,
             ids,
             hlc: state.hlc,
-            tasks,
+            tasks: merge_by_id(state.tasks, Task::id, Task::merge),
+            entries: merge_by_id(state.time_entries, TimeEntry::id, TimeEntry::merge),
             pending: state.pending,
             last_seq: state.last_seq,
         }
@@ -92,6 +109,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         ReplicaState {
             hlc: self.hlc,
             tasks: self.tasks.values().cloned().collect(),
+            time_entries: self.entries.values().cloned().collect(),
             pending: self.pending.clone(),
             last_seq: self.last_seq,
         }
@@ -104,6 +122,15 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     /// All known tasks, including deleted ones, ordered by id.
     pub fn tasks(&self) -> impl Iterator<Item = &Task> {
         self.tasks.values()
+    }
+
+    pub fn time_entry(&self, id: TimeEntryId) -> Option<&TimeEntry> {
+        self.entries.get(&id)
+    }
+
+    /// All known time entries, including deleted ones, ordered by id.
+    pub fn time_entries(&self) -> impl Iterator<Item = &TimeEntry> {
+        self.entries.values()
     }
 
     /// Operations applied locally but not yet acknowledged by the server.
@@ -126,14 +153,10 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         if self.last_seq.is_some_and(|last| seq <= last) {
             return Ok(());
         }
+        self.check_entry_task(&op.target)?;
         let hlc = self.hlc.receive(&op.hlc, self.clock.now_millis())?;
 
-        match &op.target {
-            OpTarget::Task { task_id, change } => {
-                let updated = self.task_or_empty(*task_id).apply(change, op.hlc);
-                self.tasks.insert(*task_id, updated);
-            }
-        }
+        self.apply_target(&op.target, op.hlc);
         self.pending.retain(|pending| pending.op_id != op.op_id);
         self.hlc = hlc;
         self.last_seq = Some(seq);
@@ -175,6 +198,13 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             .unwrap_or_else(|| Task::empty(id))
     }
 
+    fn entry_or_empty(&self, id: TimeEntryId, task_id: TaskId) -> TimeEntry {
+        self.entries
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| TimeEntry::empty(id, task_id))
+    }
+
     fn ensure_editable(&self, id: TaskId) -> Result<(), CommandError> {
         match self.tasks.get(&id) {
             None => Err(CommandError::NotFound(id)),
@@ -183,31 +213,84 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         }
     }
 
-    /// Stamps `changes`, applies them locally and queues them for sending.
+    fn check_entry_task(&self, target: &OpTarget) -> Result<(), RemoteError> {
+        let OpTarget::TimeEntry {
+            entry_id, task_id, ..
+        } = target
+        else {
+            return Ok(());
+        };
+        match self.entries.get(entry_id) {
+            Some(entry) if entry.task_id() != *task_id => Err(RemoteError::TaskMismatch {
+                entry: *entry_id,
+                expected: entry.task_id(),
+                actual: *task_id,
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    fn apply_target(&mut self, target: &OpTarget, hlc: Hlc) {
+        match target {
+            OpTarget::Task { task_id, change } => {
+                let updated = self.task_or_empty(*task_id).apply(change, hlc);
+                self.tasks.insert(*task_id, updated);
+            }
+            OpTarget::TimeEntry {
+                entry_id,
+                task_id,
+                change,
+            } => {
+                let updated = self.entry_or_empty(*entry_id, *task_id).apply(change, hlc);
+                self.entries.insert(*entry_id, updated);
+            }
+        }
+    }
+
+    fn emit_task(&mut self, task_id: TaskId, changes: Vec<TaskChange>) -> Result<(), CommandError> {
+        self.emit(
+            changes
+                .into_iter()
+                .map(|change| OpTarget::Task { task_id, change })
+                .collect(),
+        )
+    }
+
+    /// Stamps `targets`, applies them locally and queues them for sending.
     /// All timestamps are computed first so a clock failure changes nothing.
-    fn emit(&mut self, task_id: TaskId, changes: Vec<TaskChange>) -> Result<(), CommandError> {
+    fn emit(&mut self, targets: Vec<OpTarget>) -> Result<(), CommandError> {
         let now = self.clock.now_millis();
         let mut hlc = self.hlc;
-        let mut stamped = Vec::with_capacity(changes.len());
-        for change in changes {
+        let mut stamped = Vec::with_capacity(targets.len());
+        for target in targets {
             hlc = hlc.tick(now)?;
-            stamped.push((change, hlc));
+            stamped.push((target, hlc));
         }
 
-        let updated = stamped
-            .iter()
-            .fold(self.task_or_empty(task_id), |task, (change, hlc)| {
-                task.apply(change, *hlc)
-            });
-
         self.hlc = hlc;
-        self.tasks.insert(task_id, updated);
-        for (change, hlc) in stamped {
+        for (target, hlc) in stamped {
+            self.apply_target(&target, hlc);
             let op_id = self.ids.op_id();
-            self.pending.push(Op::task(op_id, task_id, hlc, change));
+            self.pending.push(Op { op_id, hlc, target });
         }
         Ok(())
     }
+}
+
+/// Collects `items` by id, merging duplicates.
+fn merge_by_id<K: Ord, V>(
+    items: Vec<V>,
+    id: impl Fn(&V) -> K,
+    merge: impl Fn(&V, &V) -> V,
+) -> BTreeMap<K, V> {
+    items.into_iter().fold(BTreeMap::new(), |mut merged, item| {
+        let item = match merged.remove(&id(&item)) {
+            Some(existing) => merge(&item, &existing),
+            None => item,
+        };
+        merged.insert(id(&item), item);
+        merged
+    })
 }
 
 #[cfg(test)]

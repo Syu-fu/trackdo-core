@@ -61,6 +61,7 @@ use trackdo_core::hlc::DeviceId;
 use trackdo_core::op::OpId;
 use trackdo_core::replica::Replica;
 use trackdo_core::task::TaskId;
+use trackdo_core::time_entry::TimeEntryId;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -78,6 +79,9 @@ impl IdGen for UuidV7 {
     fn task_id(&mut self) -> TaskId {
         TaskId(Uuid::now_v7().as_u128())
     }
+    fn time_entry_id(&mut self) -> TimeEntryId {
+        TimeEntryId(Uuid::now_v7().as_u128())
+    }
     fn op_id(&mut self) -> OpId {
         OpId(Uuid::now_v7().as_u128())
     }
@@ -86,6 +90,8 @@ impl IdGen for UuidV7 {
 let device = DeviceId(Uuid::new_v4().as_u128()); // generate once per install and persist
 let mut replica = Replica::new(device, SystemClock, UuidV7);
 let id = replica.create("Buy milk")?;
+let timer = replica.start(id)?; // stops any other running timer
+replica.stop(timer)?;
 replica.complete(id)?;
 
 // Send replica.pending_ops() with POST /ops, then:

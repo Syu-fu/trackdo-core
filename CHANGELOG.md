@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TimeEntry` with independent `started_at`, `stopped_at` and `deleted`
   registers, plus `duration` and `needs_attention` for entries whose stop
   time precedes their start time after concurrent edits.
+- Time tracking commands on `Replica`: `start`, `stop`, `edit_times`,
+  `delete_entry` and `add_entry`. Starting a timer stops the running one,
+  times may not lie in the future, and an entry never stops before it starts.
+- Time entry operations on the wire:
+  `"target": { "type": "time_entry", "entry_id", "task_id", "change" }`.
 
 ### Changed
 
@@ -20,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renamed to `TaskChange`.
 - **Breaking:** wire format of operations nests the task id and change under
   `"target": { "type": "task", ... }`. `PROTOCOL_VERSION` is now 2.
+- **Breaking:** `IdGen` requires `time_entry_id`, and `ReplicaState` gains
+  `time_entries`.
 
 ## [0.1.0] - 2026-10-17
 

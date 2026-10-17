@@ -9,7 +9,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn create(&mut self, title: &str) -> Result<TaskId, CommandError> {
         let title = Title::new(title)?;
         let id = self.ids.task_id();
-        self.emit(
+        self.emit_task(
             id,
             vec![
                 TaskChange::Title(title),
@@ -22,22 +22,22 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn rename(&mut self, id: TaskId, title: &str) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
         let title = Title::new(title)?;
-        self.emit(id, vec![TaskChange::Title(title)])
+        self.emit_task(id, vec![TaskChange::Title(title)])
     }
 
     pub fn complete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit(id, vec![TaskChange::Status(TaskStatus::Done)])
+        self.emit_task(id, vec![TaskChange::Status(TaskStatus::Done)])
     }
 
     pub fn reopen(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit(id, vec![TaskChange::Status(TaskStatus::Todo)])
+        self.emit_task(id, vec![TaskChange::Status(TaskStatus::Todo)])
     }
 
     pub fn delete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit(id, vec![TaskChange::Deleted(true)])
+        self.emit_task(id, vec![TaskChange::Deleted(true)])
     }
 }
 

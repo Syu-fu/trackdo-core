@@ -2,6 +2,7 @@
 
 use crate::op::OpId;
 use crate::task::TaskId;
+use crate::time_entry::TimeEntryId;
 
 /// Source of physical time.
 pub trait Clock {
@@ -12,5 +13,6 @@ pub trait Clock {
 /// Source of globally unique identifiers, typically UUIDv7.
 pub trait IdGen {
     fn task_id(&mut self) -> TaskId;
+    fn time_entry_id(&mut self) -> TimeEntryId;
     fn op_id(&mut self) -> OpId;
 }

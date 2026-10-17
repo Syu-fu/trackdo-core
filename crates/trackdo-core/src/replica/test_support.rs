@@ -5,6 +5,7 @@ use crate::env::{Clock, IdGen};
 use crate::hlc::DeviceId;
 use crate::op::{OpId, OpTarget};
 use crate::task::{TaskChange, TaskId};
+use crate::time_entry::TimeEntryId;
 use crate::title::Title;
 
 pub(super) const OTHER: DeviceId = DeviceId(8);
@@ -28,13 +29,20 @@ impl IdGen for SequentialIds {
         TaskId(self.0)
     }
 
+    fn time_entry_id(&mut self) -> TimeEntryId {
+        self.0 += 1;
+        TimeEntryId(self.0)
+    }
+
     fn op_id(&mut self) -> OpId {
         self.0 += 1;
         OpId(self.0)
     }
 }
 
-pub(super) fn replica() -> Replica<FixedClock, SequentialIds> {
+pub(super) type TestReplica = Replica<FixedClock, SequentialIds>;
+
+pub(super) fn replica() -> TestReplica {
     Replica::new(DEVICE, FixedClock(NOW), SequentialIds::default())
 }
 
@@ -42,12 +50,18 @@ pub(super) fn title(s: &str) -> Title {
     Title::new(s).unwrap()
 }
 
-pub(super) fn changes(replica: &Replica<FixedClock, SequentialIds>) -> Vec<TaskChange> {
+/// Moves the clock of `replica`, e.g. to simulate elapsed time or a reset.
+pub(super) fn set_now(replica: &mut TestReplica, now: u64) {
+    replica.clock.0 = now;
+}
+
+pub(super) fn changes(replica: &TestReplica) -> Vec<TaskChange> {
     replica
         .pending_ops()
         .iter()
-        .map(|op| match &op.target {
-            OpTarget::Task { change, .. } => change.clone(),
+        .filter_map(|op| match &op.target {
+            OpTarget::Task { change, .. } => Some(change.clone()),
+            OpTarget::TimeEntry { .. } => None,
         })
         .collect()
 }

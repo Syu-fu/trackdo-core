@@ -13,6 +13,7 @@ use trackdo_core::lww::Lww;
 use trackdo_core::op::{Op, OpId, OpTarget, Seq};
 use trackdo_core::replica::{CommandError, Replica};
 use trackdo_core::task::{Task, TaskId};
+use trackdo_core::time_entry::TimeEntryId;
 
 const REPLICAS: usize = 3;
 
@@ -42,6 +43,10 @@ impl DeviceIds {
 impl IdGen for DeviceIds {
     fn task_id(&mut self) -> TaskId {
         TaskId(self.fresh())
+    }
+
+    fn time_entry_id(&mut self) -> TimeEntryId {
+        TimeEntryId(self.fresh())
     }
 
     fn op_id(&mut self) -> OpId {
@@ -313,6 +318,7 @@ fn replay_log(server: &Server) -> Vec<Task> {
                         .unwrap_or_else(|| Task::empty(*task_id));
                     tasks.insert(*task_id, task.apply(change, op.hlc));
                 }
+                OpTarget::TimeEntry { .. } => {}
             }
             tasks
         })
