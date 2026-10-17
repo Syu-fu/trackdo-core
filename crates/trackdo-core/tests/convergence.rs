@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use trackdo_core::env::{Clock, IdGen};
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
-use trackdo_core::op::{Op, OpId, Seq};
+use trackdo_core::op::{Op, OpId, OpTarget, Seq};
 use trackdo_core::replica::{CommandError, Replica};
 use trackdo_core::task::{Task, TaskId};
 
@@ -306,10 +306,14 @@ fn replay_log(server: &Server) -> Vec<Task> {
         .log
         .iter()
         .fold(BTreeMap::new(), |mut tasks, op| {
-            let task = tasks
-                .remove(&op.task_id)
-                .unwrap_or_else(|| Task::empty(op.task_id));
-            tasks.insert(op.task_id, task.apply(&op.change, op.hlc));
+            match &op.target {
+                OpTarget::Task { task_id, change } => {
+                    let task = tasks
+                        .remove(task_id)
+                        .unwrap_or_else(|| Task::empty(*task_id));
+                    tasks.insert(*task_id, task.apply(change, op.hlc));
+                }
+            }
             tasks
         })
         .into_values()

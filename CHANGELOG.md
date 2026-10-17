@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `Op` now carries an `OpTarget` naming the entity it writes to,
+  so operations can address entities other than tasks. `FieldChange` is
+  renamed to `TaskChange`.
+- **Breaking:** wire format of operations nests the task id and change under
+  `"target": { "type": "task", ... }`. `PROTOCOL_VERSION` is now 2.
+
 ## [0.1.0] - 2026-10-17
 
 ### Added

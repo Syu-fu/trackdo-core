@@ -100,9 +100,12 @@ incoming data:
 ```json
 {
   "op_id": "01928f3a-1b2c-7d4e-8f90-a1b2c3d4e5f6",
-  "task_id": "01928f3a-0000-7000-8000-000000000001",
   "hlc": { "wall_ms": 1730000000000, "counter": 3, "device": "01928f39-ffff-7abc-9def-0123456789ab" },
-  "change": { "field": "title", "value": "buy milk" }
+  "target": {
+    "type": "task",
+    "task_id": "01928f3a-0000-7000-8000-000000000001",
+    "change": { "field": "title", "value": "buy milk" }
+  }
 }
 ```
 

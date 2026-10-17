@@ -8,4 +8,4 @@ pub mod op;
 pub mod snapshot;
 
 /// Version of the sync protocol. Bump on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;

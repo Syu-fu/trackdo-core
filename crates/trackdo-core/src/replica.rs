@@ -9,8 +9,8 @@ use thiserror::Error;
 
 use crate::env::{Clock, IdGen};
 use crate::hlc::{DeviceId, Hlc, HlcError};
-use crate::op::{Op, OpId, Seq};
-use crate::task::{FieldChange, Task, TaskId, TaskStatus};
+use crate::op::{Op, OpId, OpTarget, Seq};
+use crate::task::{Task, TaskChange, TaskId, TaskStatus};
 use crate::title::{Title, TitleError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -124,8 +124,12 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         }
         let hlc = self.hlc.receive(&op.hlc, self.clock.now_millis())?;
 
-        let updated = self.task_or_empty(op.task_id).apply(&op.change, op.hlc);
-        self.tasks.insert(op.task_id, updated);
+        match &op.target {
+            OpTarget::Task { task_id, change } => {
+                let updated = self.task_or_empty(*task_id).apply(change, op.hlc);
+                self.tasks.insert(*task_id, updated);
+            }
+        }
         self.pending.retain(|pending| pending.op_id != op.op_id);
         self.hlc = hlc;
         self.last_seq = Some(seq);
@@ -165,8 +169,8 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.emit(
             id,
             vec![
-                FieldChange::Title(title),
-                FieldChange::Status(TaskStatus::Todo),
+                TaskChange::Title(title),
+                TaskChange::Status(TaskStatus::Todo),
             ],
         )?;
         Ok(id)
@@ -175,22 +179,22 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn rename(&mut self, id: TaskId, title: &str) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
         let title = Title::new(title)?;
-        self.emit(id, vec![FieldChange::Title(title)])
+        self.emit(id, vec![TaskChange::Title(title)])
     }
 
     pub fn complete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit(id, vec![FieldChange::Status(TaskStatus::Done)])
+        self.emit(id, vec![TaskChange::Status(TaskStatus::Done)])
     }
 
     pub fn reopen(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit(id, vec![FieldChange::Status(TaskStatus::Todo)])
+        self.emit(id, vec![TaskChange::Status(TaskStatus::Todo)])
     }
 
     pub fn delete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.emit(id, vec![FieldChange::Deleted(true)])
+        self.emit(id, vec![TaskChange::Deleted(true)])
     }
 
     /// Writes may target a task this replica has not seen yet.
@@ -211,7 +215,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
 
     /// Stamps `changes`, applies them locally and queues them for sending.
     /// All timestamps are computed first so a clock failure changes nothing.
-    fn emit(&mut self, task_id: TaskId, changes: Vec<FieldChange>) -> Result<(), CommandError> {
+    fn emit(&mut self, task_id: TaskId, changes: Vec<TaskChange>) -> Result<(), CommandError> {
         let now = self.clock.now_millis();
         let mut hlc = self.hlc;
         let mut stamped = Vec::with_capacity(changes.len());
@@ -230,12 +234,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.tasks.insert(task_id, updated);
         for (change, hlc) in stamped {
             let op_id = self.ids.op_id();
-            self.pending.push(Op {
-                op_id,
-                task_id,
-                hlc,
-                change,
-            });
+            self.pending.push(Op::task(op_id, task_id, hlc, change));
         }
         Ok(())
     }
@@ -281,11 +280,13 @@ mod tests {
         Title::new(s).unwrap()
     }
 
-    fn changes(replica: &Replica<FixedClock, SequentialIds>) -> Vec<FieldChange> {
+    fn changes(replica: &Replica<FixedClock, SequentialIds>) -> Vec<TaskChange> {
         replica
             .pending_ops()
             .iter()
-            .map(|op| op.change.clone())
+            .map(|op| match &op.target {
+                OpTarget::Task { change, .. } => change.clone(),
+            })
             .collect()
     }
 
@@ -310,11 +311,14 @@ mod tests {
         assert_eq!(
             changes(&replica),
             vec![
-                FieldChange::Title(title("buy milk")),
-                FieldChange::Status(TaskStatus::Todo),
+                TaskChange::Title(title("buy milk")),
+                TaskChange::Status(TaskStatus::Todo),
             ]
         );
-        assert!(replica.pending_ops().iter().all(|op| op.task_id == id));
+        assert!(replica.pending_ops().iter().all(|op| matches!(
+            op.target,
+            OpTarget::Task { task_id, .. } if task_id == id
+        )));
     }
 
     #[test]
@@ -353,7 +357,7 @@ mod tests {
         assert_eq!(replica.task(id).unwrap().title(), Some(&title("new")));
         assert_eq!(
             changes(&replica).last(),
-            Some(&FieldChange::Title(title("new")))
+            Some(&TaskChange::Title(title("new")))
         );
     }
 
@@ -391,7 +395,7 @@ mod tests {
         replica.delete(id).unwrap();
 
         assert!(replica.task(id).unwrap().is_deleted());
-        assert_eq!(changes(&replica).last(), Some(&FieldChange::Deleted(true)));
+        assert_eq!(changes(&replica).last(), Some(&TaskChange::Deleted(true)));
     }
 
     #[test]
@@ -432,13 +436,8 @@ mod tests {
         assert_eq!(replica.pending_ops().len(), pending_before);
     }
 
-    fn remote_op(op_id: u128, task_id: TaskId, wall: u64, change: FieldChange) -> Op {
-        Op {
-            op_id: OpId(op_id),
-            task_id,
-            hlc: Hlc::new(wall, 0, OTHER),
-            change,
-        }
+    fn remote_op(op_id: u128, task_id: TaskId, wall: u64, change: TaskChange) -> Op {
+        Op::task(OpId(op_id), task_id, Hlc::new(wall, 0, OTHER), change)
     }
 
     #[test]
@@ -448,7 +447,7 @@ mod tests {
 
         replica
             .apply_remote(
-                &remote_op(1, id, NOW, FieldChange::Title(title("remote"))),
+                &remote_op(1, id, NOW, TaskChange::Title(title("remote"))),
                 Seq(1),
             )
             .unwrap();
@@ -465,7 +464,7 @@ mod tests {
 
         replica
             .apply_remote(
-                &remote_op(900, id, NOW - 1, FieldChange::Title(title("stale"))),
+                &remote_op(900, id, NOW - 1, TaskChange::Title(title("stale"))),
                 Seq(1),
             )
             .unwrap();
@@ -480,20 +479,20 @@ mod tests {
         let id = TaskId(500);
         replica
             .apply_remote(
-                &remote_op(1, id, NOW, FieldChange::Title(title("a"))),
+                &remote_op(1, id, NOW, TaskChange::Title(title("a"))),
                 Seq(5),
             )
             .unwrap();
 
         replica
             .apply_remote(
-                &remote_op(2, id, NOW + 1, FieldChange::Title(title("b"))),
+                &remote_op(2, id, NOW + 1, TaskChange::Title(title("b"))),
                 Seq(5),
             )
             .unwrap();
         replica
             .apply_remote(
-                &remote_op(3, id, NOW + 2, FieldChange::Title(title("c"))),
+                &remote_op(3, id, NOW + 2, TaskChange::Title(title("c"))),
                 Seq(4),
             )
             .unwrap();
@@ -522,7 +521,7 @@ mod tests {
 
         replica
             .apply_remote(
-                &remote_op(900, id, NOW + 10, FieldChange::Status(TaskStatus::Done)),
+                &remote_op(900, id, NOW + 10, TaskChange::Status(TaskStatus::Done)),
                 Seq(1),
             )
             .unwrap();
@@ -539,7 +538,7 @@ mod tests {
         let future = NOW + 60_000;
         replica
             .apply_remote(
-                &remote_op(900, id, future, FieldChange::Title(title("remote"))),
+                &remote_op(900, id, future, TaskChange::Title(title("remote"))),
                 Seq(1),
             )
             .unwrap();
@@ -555,12 +554,12 @@ mod tests {
     fn apply_remote_clock_overflow_changes_nothing() {
         let mut replica = replica();
         let id = TaskId(500);
-        let op = Op {
-            op_id: OpId(900),
-            task_id: id,
-            hlc: Hlc::new(NOW, u32::MAX, OTHER),
-            change: FieldChange::Title(title("a")),
-        };
+        let op = Op::task(
+            OpId(900),
+            id,
+            Hlc::new(NOW, u32::MAX, OTHER),
+            TaskChange::Title(title("a")),
+        );
 
         let result = replica.apply_remote(&op, Seq(1));
 
@@ -569,7 +568,7 @@ mod tests {
         assert_eq!(replica.last_seq(), None);
     }
 
-    fn snapshot_task(id: TaskId, wall: u64, change: FieldChange) -> Task {
+    fn snapshot_task(id: TaskId, wall: u64, change: TaskChange) -> Task {
         Task::empty(id).apply(&change, Hlc::new(wall, 0, OTHER))
     }
 
@@ -579,7 +578,7 @@ mod tests {
         let id = replica.create("a").unwrap();
         replica
             .apply_remote(
-                &remote_op(900, id, NOW + 5, FieldChange::Status(TaskStatus::Done)),
+                &remote_op(900, id, NOW + 5, TaskChange::Status(TaskStatus::Done)),
                 Seq(3),
             )
             .unwrap();
@@ -613,11 +612,11 @@ mod tests {
         let local = replica.create("local").unwrap();
         let unknown = TaskId(500);
         let snapshot = vec![
-            snapshot_task(local, NOW - 1, FieldChange::Title(title("stale"))).apply(
-                &FieldChange::Status(TaskStatus::Done),
+            snapshot_task(local, NOW - 1, TaskChange::Title(title("stale"))).apply(
+                &TaskChange::Status(TaskStatus::Done),
                 Hlc::new(NOW + 1, 0, OTHER),
             ),
-            snapshot_task(unknown, NOW, FieldChange::Title(title("remote"))),
+            snapshot_task(unknown, NOW, TaskChange::Title(title("remote"))),
         ];
 
         replica.apply_snapshot(&snapshot, Some(Seq(10))).unwrap();
@@ -664,7 +663,7 @@ mod tests {
                 &[snapshot_task(
                     id,
                     future,
-                    FieldChange::Title(title("remote")),
+                    TaskChange::Title(title("remote")),
                 )],
                 Some(Seq(1)),
             )
@@ -680,7 +679,7 @@ mod tests {
         let mut replica = replica();
         let id = TaskId(500);
         let task = Task::empty(id).apply(
-            &FieldChange::Title(title("a")),
+            &TaskChange::Title(title("a")),
             Hlc::new(NOW, u32::MAX, OTHER),
         );
 

@@ -104,7 +104,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use trackdo_core::hlc::{DeviceId, Hlc};
-    use trackdo_core::task::FieldChange;
+    use trackdo_core::task::TaskChange;
     use trackdo_core::title::Title;
 
     const DEVICE: DeviceId = DeviceId(0x0192_8f39_ffff_7abc_9def_0123_4567_89ab);
@@ -119,22 +119,14 @@ mod tests {
 
     fn full_task() -> Task {
         Task::empty(TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0001))
-            .apply(
-                &FieldChange::Title(title("buy milk")),
-                at(1_730_000_000_000),
-            )
-            .apply(
-                &FieldChange::Status(TaskStatus::Done),
-                at(1_730_000_000_500),
-            )
-            .apply(&FieldChange::Deleted(false), at(1_730_000_000_900))
+            .apply(&TaskChange::Title(title("buy milk")), at(1_730_000_000_000))
+            .apply(&TaskChange::Status(TaskStatus::Done), at(1_730_000_000_500))
+            .apply(&TaskChange::Deleted(false), at(1_730_000_000_900))
     }
 
     fn partial_task() -> Task {
-        Task::empty(TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0002)).apply(
-            &FieldChange::Status(TaskStatus::Todo),
-            at(1_730_000_001_000),
-        )
+        Task::empty(TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0002))
+            .apply(&TaskChange::Status(TaskStatus::Todo), at(1_730_000_001_000))
     }
 
     #[test]
@@ -163,10 +155,10 @@ mod tests {
 
     fn any_task() -> impl Strategy<Value = Task> {
         let change = prop_oneof![
-            "[a-z]{1,8}".prop_map(|s| FieldChange::Title(title(&s))),
+            "[a-z]{1,8}".prop_map(|s| TaskChange::Title(title(&s))),
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])
-                .prop_map(FieldChange::Status),
-            any::<bool>().prop_map(FieldChange::Deleted),
+                .prop_map(TaskChange::Status),
+            any::<bool>().prop_map(TaskChange::Deleted),
         ];
         let write = (change, any::<u64>(), any::<u32>(), any::<u128>()).prop_map(
             |(change, wall, counter, device)| (change, Hlc::new(wall, counter, DeviceId(device))),

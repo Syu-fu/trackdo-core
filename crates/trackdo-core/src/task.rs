@@ -15,7 +15,7 @@ pub enum TaskStatus {
 
 /// A write to a single task field.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FieldChange {
+pub enum TaskChange {
     Title(Title),
     Status(TaskStatus),
     Deleted(bool),
@@ -92,17 +92,17 @@ impl Task {
     }
 
     /// Task after applying `change` written at `hlc`. Stale writes are ignored.
-    pub fn apply(&self, change: &FieldChange, hlc: Hlc) -> Self {
+    pub fn apply(&self, change: &TaskChange, hlc: Hlc) -> Self {
         match change {
-            FieldChange::Title(title) => Self {
+            TaskChange::Title(title) => Self {
                 title: Some(write(&self.title, title.clone(), hlc)),
                 ..self.clone()
             },
-            FieldChange::Status(status) => Self {
+            TaskChange::Status(status) => Self {
                 status: Some(write(&self.status, *status, hlc)),
                 ..self.clone()
             },
-            FieldChange::Deleted(deleted) => Self {
+            TaskChange::Deleted(deleted) => Self {
                 deleted: Some(write(&self.deleted, *deleted, hlc)),
                 ..self.clone()
             },
@@ -177,9 +177,9 @@ mod tests {
     #[test]
     fn apply_sets_each_field() {
         let task = Task::empty(ID)
-            .apply(&FieldChange::Title(title("milk")), at(1, A))
-            .apply(&FieldChange::Status(TaskStatus::Done), at(2, A))
-            .apply(&FieldChange::Deleted(true), at(3, A));
+            .apply(&TaskChange::Title(title("milk")), at(1, A))
+            .apply(&TaskChange::Status(TaskStatus::Done), at(2, A))
+            .apply(&TaskChange::Deleted(true), at(3, A));
 
         assert_eq!(task.title(), Some(&title("milk")));
         assert_eq!(task.status(), TaskStatus::Done);
@@ -189,15 +189,15 @@ mod tests {
     #[test]
     fn apply_ignores_stale_write() {
         let task = Task::empty(ID)
-            .apply(&FieldChange::Title(title("new")), at(200, A))
-            .apply(&FieldChange::Title(title("old")), at(100, B));
+            .apply(&TaskChange::Title(title("new")), at(200, A))
+            .apply(&TaskChange::Title(title("old")), at(100, B));
 
         assert_eq!(task.title(), Some(&title("new")));
     }
 
     #[test]
     fn status_may_arrive_before_title() {
-        let task = Task::empty(ID).apply(&FieldChange::Status(TaskStatus::Done), at(1, A));
+        let task = Task::empty(ID).apply(&TaskChange::Status(TaskStatus::Done), at(1, A));
 
         assert_eq!(task.title(), None);
         assert_eq!(task.status(), TaskStatus::Done);
@@ -205,11 +205,11 @@ mod tests {
 
     #[test]
     fn concurrent_edits_to_different_fields_are_both_kept() {
-        let base = Task::empty(ID).apply(&FieldChange::Title(title("milk")), at(1, A));
+        let base = Task::empty(ID).apply(&TaskChange::Title(title("milk")), at(1, A));
 
         let task = base
-            .apply(&FieldChange::Title(title("2 milks")), at(10, A))
-            .apply(&FieldChange::Status(TaskStatus::Done), at(5, B));
+            .apply(&TaskChange::Title(title("2 milks")), at(10, A))
+            .apply(&TaskChange::Status(TaskStatus::Done), at(5, B));
 
         assert_eq!(task.title(), Some(&title("2 milks")));
         assert_eq!(task.status(), TaskStatus::Done);
@@ -218,9 +218,9 @@ mod tests {
     #[test]
     fn later_edit_does_not_resurrect_deleted_task() {
         let task = Task::empty(ID)
-            .apply(&FieldChange::Title(title("milk")), at(1, A))
-            .apply(&FieldChange::Deleted(true), at(2, A))
-            .apply(&FieldChange::Title(title("renamed")), at(3, B));
+            .apply(&TaskChange::Title(title("milk")), at(1, A))
+            .apply(&TaskChange::Deleted(true), at(2, A))
+            .apply(&TaskChange::Title(title("renamed")), at(3, B));
 
         assert!(task.is_deleted());
         assert_eq!(task.title(), Some(&title("renamed")));
@@ -229,28 +229,28 @@ mod tests {
     #[test]
     fn newer_undelete_restores_task() {
         let task = Task::empty(ID)
-            .apply(&FieldChange::Deleted(true), at(2, A))
-            .apply(&FieldChange::Deleted(false), at(3, A));
+            .apply(&TaskChange::Deleted(true), at(2, A))
+            .apply(&TaskChange::Deleted(false), at(3, A));
 
         assert!(!task.is_deleted());
     }
 
-    fn change() -> impl Strategy<Value = FieldChange> {
+    fn change() -> impl Strategy<Value = TaskChange> {
         prop_oneof![
-            prop::sample::select(vec!["a", "b", "c"]).prop_map(|s| FieldChange::Title(title(s))),
+            prop::sample::select(vec!["a", "b", "c"]).prop_map(|s| TaskChange::Title(title(s))),
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])
-                .prop_map(FieldChange::Status),
-            any::<bool>().prop_map(FieldChange::Deleted),
+                .prop_map(TaskChange::Status),
+            any::<bool>().prop_map(TaskChange::Deleted),
         ]
     }
 
-    fn write() -> impl Strategy<Value = (FieldChange, Hlc)> {
+    fn write() -> impl Strategy<Value = (TaskChange, Hlc)> {
         (change(), 0u64..4, 0u32..2, 0u128..3).prop_map(|(change, wall, counter, device)| {
             (change, Hlc::new(wall, counter, DeviceId(device)))
         })
     }
 
-    fn apply_all(writes: &[(FieldChange, Hlc)]) -> Task {
+    fn apply_all(writes: &[(TaskChange, Hlc)]) -> Task {
         writes.iter().fold(Task::empty(ID), |task, (change, hlc)| {
             task.apply(change, *hlc)
         })
@@ -277,11 +277,11 @@ mod tests {
     #[test]
     fn merge_keeps_newer_value_per_field() {
         let local = Task::empty(ID)
-            .apply(&FieldChange::Title(title("local")), at(10, A))
-            .apply(&FieldChange::Status(TaskStatus::Todo), at(1, A));
+            .apply(&TaskChange::Title(title("local")), at(10, A))
+            .apply(&TaskChange::Status(TaskStatus::Todo), at(1, A));
         let remote = Task::empty(ID)
-            .apply(&FieldChange::Title(title("remote")), at(5, B))
-            .apply(&FieldChange::Status(TaskStatus::Done), at(6, B));
+            .apply(&TaskChange::Title(title("remote")), at(5, B))
+            .apply(&TaskChange::Status(TaskStatus::Done), at(6, B));
 
         let merged = local.merge(&remote);
 
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn merge_with_empty_is_identity() {
-        let task = Task::empty(ID).apply(&FieldChange::Title(title("a")), at(1, A));
+        let task = Task::empty(ID).apply(&TaskChange::Title(title("a")), at(1, A));
 
         assert_eq!(task.merge(&Task::empty(ID)), task);
         assert_eq!(Task::empty(ID).merge(&task), task);
