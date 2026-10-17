@@ -42,6 +42,23 @@ impl<T: Clone + Ord> Lww<T> {
     }
 }
 
+/// Field after applying a write; an unset field takes the write as is.
+pub(crate) fn write<T: Clone + Ord>(field: &Option<Lww<T>>, value: T, hlc: Hlc) -> Lww<T> {
+    match field {
+        Some(current) => current.set(value, hlc),
+        None => Lww::new(value, hlc),
+    }
+}
+
+/// Join of two optional fields; an unset field is the bottom element.
+pub(crate) fn join<T: Clone + Ord>(a: &Option<Lww<T>>, b: &Option<Lww<T>>) -> Option<Lww<T>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.merge(b)),
+        (Some(only), None) | (None, Some(only)) => Some(only.clone()),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

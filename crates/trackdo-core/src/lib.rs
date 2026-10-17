@@ -6,4 +6,5 @@ pub mod lww;
 pub mod op;
 pub mod replica;
 pub mod task;
+pub mod time_entry;
 pub mod title;

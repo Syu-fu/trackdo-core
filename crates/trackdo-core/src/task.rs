@@ -1,7 +1,7 @@
 //! Task aggregate built from independent last-writer-wins fields.
 
 use crate::hlc::Hlc;
-use crate::lww::Lww;
+use crate::lww::{Lww, join, write};
 use crate::title::Title;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -127,22 +127,6 @@ impl Task {
             status: join(&self.status, &other.status),
             deleted: join(&self.deleted, &other.deleted),
         }
-    }
-}
-
-fn write<T: Clone + Ord>(field: &Option<Lww<T>>, value: T, hlc: Hlc) -> Lww<T> {
-    match field {
-        Some(current) => current.set(value, hlc),
-        None => Lww::new(value, hlc),
-    }
-}
-
-/// An unset field is the bottom element of the join.
-fn join<T: Clone + Ord>(a: &Option<Lww<T>>, b: &Option<Lww<T>>) -> Option<Lww<T>> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.merge(b)),
-        (Some(only), None) | (None, Some(only)) => Some(only.clone()),
-        (None, None) => None,
     }
 }
 

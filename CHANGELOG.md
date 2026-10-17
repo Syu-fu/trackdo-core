@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TimeEntry` with independent `started_at`, `stopped_at` and `deleted`
+  registers, plus `duration` and `needs_attention` for entries whose stop
+  time precedes their start time after concurrent edits.
+
 ### Changed
 
 - **Breaking:** `Op` now carries an `OpTarget` naming the entity it writes to,
