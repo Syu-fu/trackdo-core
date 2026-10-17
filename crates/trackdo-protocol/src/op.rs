@@ -1,13 +1,13 @@
 //! Wire representation of operations.
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use uuid::Uuid;
 
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::op::{Op, OpId};
 use trackdo_core::task::{FieldChange, TaskId, TaskStatus};
-use trackdo_core::title::{Title, TitleError};
+
+use crate::error::{ProtocolError, decode_title};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpDto {
@@ -37,16 +37,6 @@ pub enum FieldChangeDto {
 pub enum TaskStatusDto {
     Todo,
     Done,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum ProtocolError {
-    #[error("invalid title: {0}")]
-    InvalidTitle(#[from] TitleError),
-    /// Every replica must store the exact same value, so titles are not
-    /// normalized on receipt.
-    #[error("title is not in canonical form")]
-    NonCanonicalTitle,
 }
 
 impl From<&Op> for OpDto {
@@ -104,13 +94,7 @@ impl TryFrom<FieldChangeDto> for FieldChange {
 
     fn try_from(dto: FieldChangeDto) -> Result<Self, Self::Error> {
         match dto {
-            FieldChangeDto::Title(raw) => {
-                let title = Title::new(&raw)?;
-                if title.as_str() != raw {
-                    return Err(ProtocolError::NonCanonicalTitle);
-                }
-                Ok(Self::Title(title))
-            }
+            FieldChangeDto::Title(raw) => Ok(Self::Title(decode_title(&raw)?)),
             FieldChangeDto::Status(status) => Ok(Self::Status(TaskStatus::from(status))),
             FieldChangeDto::Deleted(deleted) => Ok(Self::Deleted(deleted)),
         }
@@ -139,6 +123,7 @@ impl From<TaskStatusDto> for TaskStatus {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use trackdo_core::title::{Title, TitleError};
 
     fn op(change: FieldChange) -> Op {
         Op {

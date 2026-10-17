@@ -9,6 +9,7 @@ use proptest::prelude::*;
 
 use trackdo_core::env::{Clock, IdGen};
 use trackdo_core::hlc::{DeviceId, Hlc};
+use trackdo_core::lww::Lww;
 use trackdo_core::op::{Op, OpId, Seq};
 use trackdo_core::replica::{CommandError, Replica};
 use trackdo_core::task::{Task, TaskId};
@@ -24,16 +25,17 @@ impl Clock for SimClock {
     }
 }
 
-/// Ids are prefixed with the device so replicas never collide.
+/// Ids are prefixed with the device so replicas never collide. The counter
+/// lives outside the replica so it survives simulated restarts.
 struct DeviceIds {
     device: u128,
-    next: u128,
+    next: Rc<Cell<u128>>,
 }
 
 impl DeviceIds {
     fn fresh(&mut self) -> u128 {
-        self.next += 1;
-        (self.device << 64) | self.next
+        self.next.set(self.next.get() + 1);
+        (self.device << 64) | self.next.get()
     }
 }
 
@@ -55,12 +57,20 @@ struct Server {
 }
 
 impl Server {
-    fn push(&mut self, ops: &[Op]) {
+    /// Stores new ops and returns the ids of every op it now holds,
+    /// including retransmitted ones, as the `POST /ops` response.
+    fn push(&mut self, ops: &[Op]) -> Vec<OpId> {
         for op in ops {
             if self.seen.insert(op.op_id) {
                 self.log.push(op.clone());
             }
         }
+        ops.iter().map(|op| op.op_id).collect()
+    }
+
+    fn snapshot(&self) -> (Vec<Task>, Option<Seq>) {
+        let seq = (!self.log.is_empty()).then_some(Seq(self.log.len() as u64));
+        (replay_log(self), seq)
     }
 
     fn events_after(&self, last: Option<Seq>) -> impl Iterator<Item = (Seq, &Op)> {
@@ -74,7 +84,9 @@ impl Server {
 }
 
 struct Node {
+    device: u128,
     clock: Rc<Cell<u64>>,
+    next_id: Rc<Cell<u128>>,
     replica: Replica<SimClock, DeviceIds>,
     /// Newest timestamp this node has observed, local or remote.
     max_seen: Option<Hlc>,
@@ -83,16 +95,42 @@ struct Node {
 impl Node {
     fn new(device: usize, skew_ms: u64) -> Self {
         let clock = Rc::new(Cell::new(1_000_000 + skew_ms));
+        let next_id = Rc::new(Cell::new(0));
         let device = device as u128 + 1;
         let replica = Replica::new(
             DeviceId(device),
             SimClock(Rc::clone(&clock)),
-            DeviceIds { device, next: 0 },
+            DeviceIds {
+                device,
+                next: Rc::clone(&next_id),
+            },
         );
         Self {
+            device,
             clock,
+            next_id,
             replica,
             max_seen: None,
+        }
+    }
+
+    /// Simulates an app restart: only the persisted state survives.
+    fn restart(&mut self) {
+        self.replica = Replica::restore(
+            self.replica.state(),
+            SimClock(Rc::clone(&self.clock)),
+            DeviceIds {
+                device: self.device,
+                next: Rc::clone(&self.next_id),
+            },
+        );
+    }
+
+    fn resync(&mut self, server: &Server) {
+        let (tasks, seq) = server.snapshot();
+        self.replica.apply_snapshot(&tasks, seq).unwrap();
+        for hlc in tasks.iter().flat_map(register_hlcs) {
+            self.observe(hlc);
         }
     }
 
@@ -149,10 +187,13 @@ enum Edit {
 #[derive(Debug, Clone)]
 enum Action {
     Edit(usize, Edit),
-    Push(usize),
+    /// The bool tells whether the response reaches the client.
+    Push(usize, bool),
     Pull(usize, usize),
     Replay(usize, usize),
     Tick(usize, u64),
+    Resync(usize),
+    Restart(usize),
 }
 
 fn title() -> impl Strategy<Value = String> {
@@ -173,10 +214,12 @@ fn action() -> impl Strategy<Value = Action> {
     let node = 0..REPLICAS;
     prop_oneof![
         4 => (node.clone(), edit()).prop_map(|(n, e)| Action::Edit(n, e)),
-        2 => node.clone().prop_map(Action::Push),
+        2 => (node.clone(), any::<bool>()).prop_map(|(n, ok)| Action::Push(n, ok)),
         2 => (node.clone(), 1usize..5).prop_map(|(n, max)| Action::Pull(n, max)),
         1 => (node.clone(), 1usize..5).prop_map(|(n, count)| Action::Replay(n, count)),
-        1 => (node, 0u64..3).prop_map(|(n, delta)| Action::Tick(n, delta)),
+        1 => (node.clone(), 0u64..3).prop_map(|(n, delta)| Action::Tick(n, delta)),
+        1 => node.clone().prop_map(Action::Resync),
+        1 => node.prop_map(Action::Restart),
     ]
 }
 
@@ -221,21 +264,40 @@ fn run_edit(node: &mut Node, edit: &Edit) {
 fn run(node: &mut Node, server: &mut Server, action: &Action) {
     match action {
         Action::Edit(_, edit) => run_edit(node, edit),
-        Action::Push(_) => server.push(node.replica.pending_ops()),
+        Action::Push(_, response_delivered) => {
+            let acked = server.push(node.replica.pending_ops());
+            if *response_delivered {
+                node.replica.acknowledge(&acked);
+            }
+        }
         Action::Pull(_, max) => node.pull(server, *max),
         Action::Replay(_, count) => node.replay(server, *count),
         Action::Tick(_, delta) => node.clock.set(node.clock.get() + delta),
+        Action::Resync(_) => node.resync(server),
+        Action::Restart(_) => node.restart(),
     }
 }
 
 fn target(action: &Action) -> usize {
     match action {
         Action::Edit(n, _)
-        | Action::Push(n)
+        | Action::Push(n, _)
         | Action::Pull(n, _)
         | Action::Replay(n, _)
-        | Action::Tick(n, _) => *n,
+        | Action::Tick(n, _)
+        | Action::Resync(n)
+        | Action::Restart(n) => *n,
     }
+}
+
+fn register_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
+    [
+        task.title_register().map(Lww::hlc),
+        task.status_register().map(Lww::hlc),
+        task.deleted_register().map(Lww::hlc),
+    ]
+    .into_iter()
+    .flatten()
 }
 
 /// State obtained by applying the server log, in order, to nothing.
@@ -274,8 +336,9 @@ proptest! {
         }
 
         // Quiesce: everyone sends what is pending, then catches up.
-        for node in &nodes {
-            server.push(node.replica.pending_ops());
+        for node in &mut nodes {
+            let acked = server.push(node.replica.pending_ops());
+            node.replica.acknowledge(&acked);
         }
         for node in &mut nodes {
             node.pull(&server, usize::MAX);

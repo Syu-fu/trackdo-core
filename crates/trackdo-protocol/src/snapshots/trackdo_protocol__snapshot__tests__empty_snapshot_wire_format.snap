@@ -1,0 +1,8 @@
+---
+source: crates/trackdo-protocol/src/snapshot.rs
+expression: "SnapshotDto::new(&[], None)"
+---
+{
+  "seq": null,
+  "tasks": []
+}

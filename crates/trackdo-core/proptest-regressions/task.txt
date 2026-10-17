@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 520275ebdf5369972fb148de84f12587edb75e3722bbc349c01446b8e226a36f # shrinks to a = Task { id: TaskId(42), title: None, status: None, deleted: None }, b = Task { id: TaskId(42), title: None, status: None, deleted: None }
+cc 4562c4b18ac78a132e59c3bbc9757dc9d7e35b17db9a3b7598cba023d9de20d3 # shrinks to a = Task { id: TaskId(42), title: None, status: None, deleted: None }
+cc 963d60ae1689795f29cfa4427e7b902a8e47d178ddefe761a440243631097201 # shrinks to a = Task { id: TaskId(42), title: None, status: None, deleted: None }, b = Task { id: TaskId(42), title: None, status: None, deleted: None }, c = Task { id: TaskId(42), title: None, status: None, deleted: None }
+cc 4067e4876e0c150afd04f21718c837ed1db9995e7586ed76872e186c4997766e # shrinks to left = [], right = []

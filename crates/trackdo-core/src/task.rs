@@ -42,8 +42,35 @@ impl Task {
         }
     }
 
+    /// Rebuilds a task from previously exported registers.
+    pub const fn from_registers(
+        id: TaskId,
+        title: Option<Lww<Title>>,
+        status: Option<Lww<TaskStatus>>,
+        deleted: Option<Lww<bool>>,
+    ) -> Self {
+        Self {
+            id,
+            title,
+            status,
+            deleted,
+        }
+    }
+
     pub const fn id(&self) -> TaskId {
         self.id
+    }
+
+    pub const fn title_register(&self) -> Option<&Lww<Title>> {
+        self.title.as_ref()
+    }
+
+    pub const fn status_register(&self) -> Option<&Lww<TaskStatus>> {
+        self.status.as_ref()
+    }
+
+    pub const fn deleted_register(&self) -> Option<&Lww<bool>> {
+        self.deleted.as_ref()
     }
 
     /// `None` until a title write has been received.
@@ -81,13 +108,41 @@ impl Task {
             },
         }
     }
+
+    /// Timestamp of the most recent write to any field.
+    pub(crate) fn newest_hlc(&self) -> Option<Hlc> {
+        let title = self.title.as_ref().map(Lww::hlc);
+        let status = self.status.as_ref().map(Lww::hlc);
+        let deleted = self.deleted.as_ref().map(Lww::hlc);
+        title.max(status).max(deleted)
+    }
+
+    /// Field-wise join with another copy of the same task, as received in a
+    /// snapshot. Equivalent to applying every write either side has seen.
+    pub(crate) fn merge(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.id, other.id, "merging different tasks");
+        Self {
+            id: self.id,
+            title: join(&self.title, &other.title),
+            status: join(&self.status, &other.status),
+            deleted: join(&self.deleted, &other.deleted),
+        }
+    }
 }
 
-/// An unset field is the bottom element, so the first write always wins.
 fn write<T: Clone + Ord>(field: &Option<Lww<T>>, value: T, hlc: Hlc) -> Lww<T> {
     match field {
         Some(current) => current.set(value, hlc),
         None => Lww::new(value, hlc),
+    }
+}
+
+/// An unset field is the bottom element of the join.
+fn join<T: Clone + Ord>(a: &Option<Lww<T>>, b: &Option<Lww<T>>) -> Option<Lww<T>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.merge(b)),
+        (Some(only), None) | (None, Some(only)) => Some(only.clone()),
+        (None, None) => None,
     }
 }
 
@@ -201,7 +256,78 @@ mod tests {
         })
     }
 
+    #[test]
+    fn from_registers_exposes_registers() {
+        let title_reg = Lww::new(title("milk"), at(1, A));
+        let status_reg = Lww::new(TaskStatus::Done, at(2, A));
+        let deleted_reg = Lww::new(true, at(3, B));
+
+        let task = Task::from_registers(
+            ID,
+            Some(title_reg.clone()),
+            Some(status_reg.clone()),
+            Some(deleted_reg.clone()),
+        );
+
+        assert_eq!(task.title_register(), Some(&title_reg));
+        assert_eq!(task.status_register(), Some(&status_reg));
+        assert_eq!(task.deleted_register(), Some(&deleted_reg));
+    }
+
+    #[test]
+    fn merge_keeps_newer_value_per_field() {
+        let local = Task::empty(ID)
+            .apply(&FieldChange::Title(title("local")), at(10, A))
+            .apply(&FieldChange::Status(TaskStatus::Todo), at(1, A));
+        let remote = Task::empty(ID)
+            .apply(&FieldChange::Title(title("remote")), at(5, B))
+            .apply(&FieldChange::Status(TaskStatus::Done), at(6, B));
+
+        let merged = local.merge(&remote);
+
+        assert_eq!(merged.title(), Some(&title("local")));
+        assert_eq!(merged.status(), TaskStatus::Done);
+        assert_eq!(merged.deleted_register(), None);
+    }
+
+    #[test]
+    fn merge_with_empty_is_identity() {
+        let task = Task::empty(ID).apply(&FieldChange::Title(title("a")), at(1, A));
+
+        assert_eq!(task.merge(&Task::empty(ID)), task);
+        assert_eq!(Task::empty(ID).merge(&task), task);
+    }
+
+    fn any_task() -> impl Strategy<Value = Task> {
+        prop::collection::vec(write(), 0..6).prop_map(|writes| apply_all(&writes))
+    }
+
     proptest! {
+        #[test]
+        fn merge_is_commutative(a in any_task(), b in any_task()) {
+            prop_assert_eq!(a.merge(&b), b.merge(&a));
+        }
+
+        #[test]
+        fn merge_is_associative(a in any_task(), b in any_task(), c in any_task()) {
+            prop_assert_eq!(a.merge(&b).merge(&c), a.merge(&b.merge(&c)));
+        }
+
+        #[test]
+        fn merge_is_idempotent(a in any_task()) {
+            prop_assert_eq!(a.merge(&a), a);
+        }
+
+        #[test]
+        fn merging_states_equals_applying_all_writes(
+            left in prop::collection::vec(write(), 0..8),
+            right in prop::collection::vec(write(), 0..8),
+        ) {
+            let both: Vec<_> = left.iter().chain(right.iter()).cloned().collect();
+
+            prop_assert_eq!(apply_all(&left).merge(&apply_all(&right)), apply_all(&both));
+        }
+
         #[test]
         fn apply_order_does_not_matter(
             (writes, shuffled) in prop::collection::vec(write(), 0..12)

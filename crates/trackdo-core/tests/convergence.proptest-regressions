@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 04e181eb9cc62791603e48beb1861adc3854bc306f9a05ab14820a08d42eb0a0 # shrinks to skews = [0, 0, 0], actions = [Edit(0, Create("milk"))]
 cc 0900fec5330f549ac2f04d329ce1db40500e88ded634b62b3f74953de42edbe1 # shrinks to skews = [0, 0, 0], actions = [Edit(0, Create("milk")), Push(0), Pull(2, 1), Edit(0, Delete(0)), Edit(2, Complete(0))]
+cc 14e03a25fce4ac318b6e66cb21b5e41f6ad0163506946562e20d3655f9e2890b # shrinks to skews = [0, 0, 0], actions = [Edit(1, Create("milk")), Push(1, false), Resync(1)]

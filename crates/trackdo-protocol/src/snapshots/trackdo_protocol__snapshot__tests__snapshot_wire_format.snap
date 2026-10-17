@@ -1,0 +1,49 @@
+---
+source: crates/trackdo-protocol/src/snapshot.rs
+expression: "SnapshotDto::new(&[full_task(), partial_task()], Some(Seq(42)))"
+---
+{
+  "seq": 42,
+  "tasks": [
+    {
+      "id": "01928f3a-0000-7000-8000-000000000001",
+      "title": {
+        "value": "buy milk",
+        "hlc": {
+          "wall_ms": 1730000000000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "status": {
+        "value": "done",
+        "hlc": {
+          "wall_ms": 1730000000500,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "deleted": {
+        "value": false,
+        "hlc": {
+          "wall_ms": 1730000000900,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      }
+    },
+    {
+      "id": "01928f3a-0000-7000-8000-000000000002",
+      "title": null,
+      "status": {
+        "value": "todo",
+        "hlc": {
+          "wall_ms": 1730000001000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "deleted": null
+    }
+  ]
+}

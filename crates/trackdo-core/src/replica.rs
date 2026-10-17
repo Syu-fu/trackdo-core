@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::env::{Clock, IdGen};
 use crate::hlc::{DeviceId, Hlc, HlcError};
-use crate::op::{Op, Seq};
+use crate::op::{Op, OpId, Seq};
 use crate::task::{FieldChange, Task, TaskId, TaskStatus};
 use crate::title::{Title, TitleError};
 
@@ -31,6 +31,15 @@ pub enum RemoteError {
     Clock(#[from] HlcError),
 }
 
+/// Everything a host must persist to restore a replica after a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaState {
+    pub hlc: Hlc,
+    pub tasks: Vec<Task>,
+    pub pending: Vec<Op>,
+    pub last_seq: Option<Seq>,
+}
+
 pub struct Replica<C, G> {
     clock: C,
     ids: G,
@@ -49,6 +58,38 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             tasks: BTreeMap::new(),
             pending: Vec::new(),
             last_seq: None,
+        }
+    }
+
+    /// Rebuilds a replica from a state previously returned by [`Self::state`].
+    pub fn restore(state: ReplicaState, clock: C, ids: G) -> Self {
+        let tasks = state
+            .tasks
+            .into_iter()
+            .fold(BTreeMap::new(), |mut tasks, task| {
+                let merged = match tasks.remove(&task.id()) {
+                    Some(existing) => task.merge(&existing),
+                    None => task,
+                };
+                tasks.insert(merged.id(), merged);
+                tasks
+            });
+        Self {
+            clock,
+            ids,
+            hlc: state.hlc,
+            tasks,
+            pending: state.pending,
+            last_seq: state.last_seq,
+        }
+    }
+
+    pub fn state(&self) -> ReplicaState {
+        ReplicaState {
+            hlc: self.hlc,
+            tasks: self.tasks.values().cloned().collect(),
+            pending: self.pending.clone(),
+            last_seq: self.last_seq,
         }
     }
 
@@ -88,6 +129,33 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.pending.retain(|pending| pending.op_id != op.op_id);
         self.hlc = hlc;
         self.last_seq = Some(seq);
+        Ok(())
+    }
+
+    /// Confirms operations the server reported as stored, typically from the
+    /// `POST /ops` response. Needed because an operation may never be echoed
+    /// back, e.g. when a snapshot moves [`Self::last_seq`] past it.
+    pub fn acknowledge(&mut self, op_ids: &[OpId]) {
+        self.pending.retain(|op| !op_ids.contains(&op.op_id));
+    }
+
+    /// Merges a full server snapshot taken at `seq`, e.g. on first sync or
+    /// after the event log no longer reaches back to [`Self::last_seq`].
+    ///
+    /// Pending operations are kept: they are re-sent and acknowledged as usual.
+    pub fn apply_snapshot(&mut self, tasks: &[Task], seq: Option<Seq>) -> Result<(), RemoteError> {
+        let newest = tasks.iter().filter_map(Task::newest_hlc).max();
+        let hlc = match newest {
+            Some(newest) => self.hlc.receive(&newest, self.clock.now_millis())?,
+            None => self.hlc,
+        };
+
+        for task in tasks {
+            let merged = self.task_or_empty(task.id()).merge(task);
+            self.tasks.insert(task.id(), merged);
+        }
+        self.hlc = hlc;
+        self.last_seq = self.last_seq.max(seq);
         Ok(())
     }
 
@@ -176,7 +244,6 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::op::OpId;
 
     const OTHER: DeviceId = DeviceId(8);
 
@@ -500,5 +567,162 @@ mod tests {
         assert_eq!(result, Err(RemoteError::Clock(HlcError::CounterOverflow)));
         assert!(replica.task(id).is_none());
         assert_eq!(replica.last_seq(), None);
+    }
+
+    fn snapshot_task(id: TaskId, wall: u64, change: FieldChange) -> Task {
+        Task::empty(id).apply(&change, Hlc::new(wall, 0, OTHER))
+    }
+
+    #[test]
+    fn state_roundtrips_through_restore() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        replica
+            .apply_remote(
+                &remote_op(900, id, NOW + 5, FieldChange::Status(TaskStatus::Done)),
+                Seq(3),
+            )
+            .unwrap();
+        replica.rename(id, "b").unwrap();
+        let state = replica.state();
+
+        let restored = Replica::restore(state.clone(), FixedClock(NOW), SequentialIds(1_000));
+
+        assert_eq!(restored.state(), state);
+        assert_eq!(restored.last_seq(), Some(Seq(3)));
+        assert_eq!(restored.task(id).unwrap().title(), Some(&title("b")));
+        assert_eq!(restored.pending_ops(), replica.pending_ops());
+    }
+
+    #[test]
+    fn restored_replica_keeps_clock_monotonic() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        let last_hlc = replica.pending_ops().last().unwrap().hlc;
+
+        let mut restored =
+            Replica::restore(replica.state(), FixedClock(NOW - 500), SequentialIds(1_000));
+        restored.rename(id, "b").unwrap();
+
+        assert!(restored.pending_ops().last().unwrap().hlc > last_hlc);
+    }
+
+    #[test]
+    fn apply_snapshot_merges_field_by_field() {
+        let mut replica = replica();
+        let local = replica.create("local").unwrap();
+        let unknown = TaskId(500);
+        let snapshot = vec![
+            snapshot_task(local, NOW - 1, FieldChange::Title(title("stale"))).apply(
+                &FieldChange::Status(TaskStatus::Done),
+                Hlc::new(NOW + 1, 0, OTHER),
+            ),
+            snapshot_task(unknown, NOW, FieldChange::Title(title("remote"))),
+        ];
+
+        replica.apply_snapshot(&snapshot, Some(Seq(10))).unwrap();
+
+        let task = replica.task(local).unwrap();
+        assert_eq!(task.title(), Some(&title("local")));
+        assert_eq!(task.status(), TaskStatus::Done);
+        assert_eq!(
+            replica.task(unknown).unwrap().title(),
+            Some(&title("remote"))
+        );
+        assert_eq!(replica.last_seq(), Some(Seq(10)));
+    }
+
+    #[test]
+    fn apply_snapshot_keeps_pending_ops() {
+        let mut replica = replica();
+        replica.create("a").unwrap();
+        let pending = replica.pending_ops().to_vec();
+
+        replica.apply_snapshot(&[], Some(Seq(10))).unwrap();
+
+        assert_eq!(replica.pending_ops(), pending.as_slice());
+    }
+
+    #[test]
+    fn apply_snapshot_never_moves_cursor_backwards() {
+        let mut replica = replica();
+        replica.apply_snapshot(&[], Some(Seq(10))).unwrap();
+
+        replica.apply_snapshot(&[], Some(Seq(4))).unwrap();
+        replica.apply_snapshot(&[], None).unwrap();
+
+        assert_eq!(replica.last_seq(), Some(Seq(10)));
+    }
+
+    #[test]
+    fn local_writes_after_snapshot_are_newer_than_its_contents() {
+        let mut replica = replica();
+        let id = TaskId(500);
+        let future = NOW + 60_000;
+        replica
+            .apply_snapshot(
+                &[snapshot_task(
+                    id,
+                    future,
+                    FieldChange::Title(title("remote")),
+                )],
+                Some(Seq(1)),
+            )
+            .unwrap();
+
+        replica.rename(id, "local").unwrap();
+
+        assert_eq!(replica.task(id).unwrap().title(), Some(&title("local")));
+    }
+
+    #[test]
+    fn apply_snapshot_clock_overflow_changes_nothing() {
+        let mut replica = replica();
+        let id = TaskId(500);
+        let task = Task::empty(id).apply(
+            &FieldChange::Title(title("a")),
+            Hlc::new(NOW, u32::MAX, OTHER),
+        );
+
+        let result = replica.apply_snapshot(&[task], Some(Seq(1)));
+
+        assert_eq!(result, Err(RemoteError::Clock(HlcError::CounterOverflow)));
+        assert!(replica.task(id).is_none());
+        assert_eq!(replica.last_seq(), None);
+    }
+
+    #[test]
+    fn acknowledge_removes_only_listed_ops() {
+        let mut replica = replica();
+        replica.create("a").unwrap();
+        let ops = replica.pending_ops().to_vec();
+
+        replica.acknowledge(&[ops[1].op_id]);
+
+        assert_eq!(replica.pending_ops(), &ops[..1]);
+    }
+
+    #[test]
+    fn acknowledge_ignores_unknown_ids() {
+        let mut replica = replica();
+        replica.create("a").unwrap();
+        let ops = replica.pending_ops().to_vec();
+
+        replica.acknowledge(&[OpId(u128::MAX)]);
+
+        assert_eq!(replica.pending_ops(), ops.as_slice());
+    }
+
+    #[test]
+    fn op_acknowledged_after_snapshot_skipped_its_echo() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        let sent: Vec<OpId> = replica.pending_ops().iter().map(|op| op.op_id).collect();
+        let snapshot = vec![replica.task(id).unwrap().clone()];
+        replica.apply_snapshot(&snapshot, Some(Seq(2))).unwrap();
+
+        replica.acknowledge(&sent);
+
+        assert!(replica.pending_ops().is_empty());
     }
 }
