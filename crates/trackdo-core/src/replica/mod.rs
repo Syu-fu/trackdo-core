@@ -8,6 +8,7 @@ mod task_commands;
 #[cfg(test)]
 mod test_support;
 mod time_commands;
+mod time_queries;
 
 use std::collections::BTreeMap;
 
