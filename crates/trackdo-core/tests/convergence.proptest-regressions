@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 04e181eb9cc62791603e48beb1861adc3854bc306f9a05ab14820a08d42eb0a0 # shrinks to skews = [0, 0, 0], actions = [Edit(0, Create("milk"))]
+cc 0900fec5330f549ac2f04d329ce1db40500e88ded634b62b3f74953de42edbe1 # shrinks to skews = [0, 0, 0], actions = [Edit(0, Create("milk")), Push(0), Pull(2, 1), Edit(0, Delete(0)), Edit(2, Complete(0))]
