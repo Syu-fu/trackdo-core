@@ -3,7 +3,7 @@
 use super::Replica;
 use crate::env::{Clock, IdGen};
 use crate::hlc::DeviceId;
-use crate::op::{OpId, OpTarget};
+use crate::op::{LogId, OpId, OpTarget};
 use crate::task::{TaskChange, TaskId};
 use crate::time_entry::TimeEntryId;
 use crate::title::Title;
@@ -11,6 +11,7 @@ use crate::title::Title;
 pub(super) const OTHER: DeviceId = DeviceId(8);
 pub(super) const DEVICE: DeviceId = DeviceId(7);
 pub(super) const NOW: u64 = 1_000;
+pub(super) const LOG: LogId = LogId(1);
 
 pub(super) struct FixedClock(pub(super) u64);
 

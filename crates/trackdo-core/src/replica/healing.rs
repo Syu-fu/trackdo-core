@@ -188,6 +188,7 @@ mod tests {
 
         replica
             .apply_snapshot(&Snapshot {
+                log_id: LOG,
                 tasks: vec![deleted],
                 time_entries: Vec::new(),
                 seq: Some(Seq(5)),

@@ -12,6 +12,11 @@ pub struct OpId(pub u128);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seq(pub u64);
 
+/// Identity of one server operation log. A new id means the log was replaced,
+/// e.g. restored from a backup, so positions in the old log mean nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LogId(pub u128);
+
 /// A write of one field of one entity at one point in time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Op {

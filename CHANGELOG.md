@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Replica::reject` drops pending operations the server refused for good, so
   one invalid operation no longer blocks every later push. The rejected
   writes stay applied locally until a newer write to the same field arrives.
+- `LogId` identifies a server operation log. Replicas learn it from
+  snapshots and expose it as `Replica::log_id`; a snapshot of another log,
+  e.g. after the server was restored from a backup, replaces `last_seq`
+  instead of only moving it forward.
+
+### Changed
+
+- **Breaking:** `Snapshot` and `ReplicaState` carry a `log_id`, and
+  `Snapshot` no longer implements `Default`.
+- **Breaking:** snapshots on the wire carry `"log_id"`, and
+  `PROTOCOL_VERSION` is 3.
 
 ## [0.2.0] - 2026-10-18
 

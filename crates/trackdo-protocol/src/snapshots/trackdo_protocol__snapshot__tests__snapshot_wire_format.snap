@@ -1,8 +1,9 @@
 ---
 source: crates/trackdo-protocol/src/snapshot.rs
-expression: "SnapshotDto::from(&Snapshot\n{\n    tasks: vec![full_task(), partial_task()], time_entries:\n    vec![stopped_entry(), running_entry()], seq: Some(Seq(42)),\n})"
+expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_task(), partial_task()], time_entries:\n    vec![stopped_entry(), running_entry()], seq: Some(Seq(42)),\n})"
 ---
 {
+  "log_id": "01928f30-0000-7000-8000-000000000001",
   "seq": 42,
   "tasks": [
     {

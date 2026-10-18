@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::env::{Clock, IdGen};
 use crate::hlc::{DeviceId, Hlc, HlcError};
-use crate::op::{Op, OpId, OpTarget, Seq};
+use crate::op::{LogId, Op, OpId, OpTarget, Seq};
 use crate::task::{Task, TaskChange, TaskId};
 use crate::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 use crate::title::TitleError;
@@ -68,12 +68,15 @@ pub struct ReplicaState {
     pub tasks: Vec<Task>,
     pub time_entries: Vec<TimeEntry>,
     pub pending: Vec<Op>,
+    pub log_id: Option<LogId>,
     pub last_seq: Option<Seq>,
 }
 
-/// Full server state as of `seq`, which is `None` while the log is empty.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Full server state of the log `log_id` as of `seq`, which is `None` while
+/// the log is empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
+    pub log_id: LogId,
     pub tasks: Vec<Task>,
     pub time_entries: Vec<TimeEntry>,
     pub seq: Option<Seq>,
@@ -86,6 +89,7 @@ pub struct Replica<C, G> {
     tasks: BTreeMap<TaskId, Task>,
     entries: BTreeMap<TimeEntryId, TimeEntry>,
     pending: Vec<Op>,
+    log_id: Option<LogId>,
     last_seq: Option<Seq>,
 }
 
@@ -98,6 +102,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             tasks: BTreeMap::new(),
             entries: BTreeMap::new(),
             pending: Vec::new(),
+            log_id: None,
             last_seq: None,
         }
     }
@@ -111,6 +116,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             tasks: merge_by_id(state.tasks, Task::id, Task::merge),
             entries: merge_by_id(state.time_entries, TimeEntry::id, TimeEntry::merge),
             pending: state.pending,
+            log_id: state.log_id,
             last_seq: state.last_seq,
         }
     }
@@ -121,6 +127,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             tasks: self.tasks.values().cloned().collect(),
             time_entries: self.entries.values().cloned().collect(),
             pending: self.pending.clone(),
+            log_id: self.log_id,
             last_seq: self.last_seq,
         }
     }
@@ -146,6 +153,12 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     /// Operations applied locally but not yet acknowledged by the server.
     pub fn pending_ops(&self) -> &[Op] {
         &self.pending
+    }
+
+    /// The server log [`Self::last_seq`] refers to, learned from the last
+    /// snapshot.
+    pub fn log_id(&self) -> Option<LogId> {
+        self.log_id
     }
 
     /// Position of the last operation received from the server, used to
@@ -203,6 +216,10 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     /// Merges a full server snapshot, e.g. on first sync or after the event
     /// log no longer reaches back to [`Self::last_seq`].
     ///
+    /// A snapshot of another log than the one [`Self::last_seq`] refers to,
+    /// e.g. after the server was restored from a backup, replaces the cursor
+    /// instead of only moving it forward.
+    ///
     /// Pending operations are kept: they are re-sent and acknowledged as usual.
     /// Timers left to be treated as stopped are healed as in
     /// [`Self::apply_remote`]. A snapshot moving a known entry to another task
@@ -232,7 +249,12 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             self.entries.insert(entry.id(), merged);
         }
         self.hlc = hlc;
-        self.last_seq = self.last_seq.max(snapshot.seq);
+        self.last_seq = if self.log_id == Some(snapshot.log_id) {
+            self.last_seq.max(snapshot.seq)
+        } else {
+            snapshot.seq
+        };
+        self.log_id = Some(snapshot.log_id);
         Ok(self.heal()?)
     }
 
@@ -484,6 +506,7 @@ mod tests {
 
     fn tasks_only(tasks: Vec<Task>, seq: Option<Seq>) -> Snapshot {
         Snapshot {
+            log_id: LOG,
             tasks,
             time_entries: Vec::new(),
             seq,
@@ -502,6 +525,7 @@ mod tests {
             .add_entry(task, Timestamp(100), Timestamp(200))
             .unwrap();
         let snapshot = Snapshot {
+            log_id: LOG,
             tasks: Vec::new(),
             time_entries: vec![
                 snapshot_entry(local.0, task, NOW + 1, TimeEntryChange::Deleted(true)).apply(
@@ -533,6 +557,7 @@ mod tests {
             .unwrap();
         let before = replica.state();
         let snapshot = Snapshot {
+            log_id: LOG,
             tasks: vec![snapshot_task(TaskId(500), NOW, TaskChange::Deleted(true))],
             time_entries: vec![snapshot_entry(
                 local.0,
@@ -563,6 +588,7 @@ mod tests {
         let entry = TimeEntryId(500);
         let future = NOW + 60_000;
         let snapshot = Snapshot {
+            log_id: LOG,
             tasks: Vec::new(),
             time_entries: vec![
                 snapshot_entry(500, task, future, TimeEntryChange::StartedAt(Timestamp(10))).apply(
@@ -589,6 +615,9 @@ mod tests {
         let mut replica = replica();
         let id = replica.create("a").unwrap();
         replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(1))))
+            .unwrap();
+        replica
             .apply_remote(
                 &remote_op(900, id, NOW + 5, TaskChange::Status(TaskStatus::Done)),
                 Seq(3),
@@ -601,6 +630,7 @@ mod tests {
 
         assert_eq!(restored.state(), state);
         assert_eq!(restored.last_seq(), Some(Seq(3)));
+        assert_eq!(restored.log_id(), Some(LOG));
         assert_eq!(restored.task(id).unwrap().title(), Some(&title("b")));
         assert_eq!(restored.pending_ops(), replica.pending_ops());
     }
@@ -668,9 +698,81 @@ mod tests {
         replica
             .apply_snapshot(&tasks_only(vec![], Some(Seq(4))))
             .unwrap();
-        replica.apply_snapshot(&Snapshot::default()).unwrap();
+        replica.apply_snapshot(&tasks_only(vec![], None)).unwrap();
 
         assert_eq!(replica.last_seq(), Some(Seq(10)));
+    }
+
+    #[test]
+    fn apply_snapshot_adopts_its_log() {
+        let mut replica = replica();
+
+        replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(10))))
+            .unwrap();
+
+        assert_eq!(replica.log_id(), Some(LOG));
+        assert_eq!(replica.last_seq(), Some(Seq(10)));
+    }
+
+    #[test]
+    fn snapshot_of_another_log_replaces_cursor() {
+        let mut replica = replica();
+        replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(10))))
+            .unwrap();
+        let restored = Snapshot {
+            log_id: LogId(2),
+            ..tasks_only(vec![], Some(Seq(4)))
+        };
+
+        replica.apply_snapshot(&restored).unwrap();
+
+        assert_eq!(replica.log_id(), Some(LogId(2)));
+        assert_eq!(replica.last_seq(), Some(Seq(4)));
+    }
+
+    #[test]
+    fn snapshot_of_another_empty_log_clears_cursor() {
+        let mut replica = replica();
+        replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(10))))
+            .unwrap();
+        let empty = Snapshot {
+            log_id: LogId(2),
+            ..tasks_only(vec![], None)
+        };
+
+        replica.apply_snapshot(&empty).unwrap();
+
+        assert_eq!(replica.last_seq(), None);
+    }
+
+    #[test]
+    fn rejected_snapshot_of_another_log_changes_nothing() {
+        let mut replica = replica();
+        let task = replica.create("work").unwrap();
+        let local = replica
+            .add_entry(task, Timestamp(100), Timestamp(200))
+            .unwrap();
+        replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(10))))
+            .unwrap();
+        let before = replica.state();
+        let moved = Snapshot {
+            log_id: LogId(2),
+            tasks: Vec::new(),
+            time_entries: vec![snapshot_entry(
+                local.0,
+                TaskId(77),
+                NOW,
+                TimeEntryChange::Deleted(true),
+            )],
+            seq: Some(Seq(1)),
+        };
+
+        assert!(replica.apply_snapshot(&moved).is_err());
+        assert_eq!(replica.state(), before);
     }
 
     #[test]

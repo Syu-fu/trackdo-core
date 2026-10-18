@@ -12,7 +12,7 @@ use proptest::prelude::*;
 use trackdo_core::env::{Clock, IdGen};
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
-use trackdo_core::op::{Op, OpId, OpTarget, Seq};
+use trackdo_core::op::{LogId, Op, OpId, OpTarget, Seq};
 use trackdo_core::replica::{CommandError, Replica, Snapshot};
 use trackdo_core::task::{Task, TaskId};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
@@ -59,13 +59,21 @@ impl IdGen for DeviceIds {
 }
 
 /// Assigns sequence numbers in arrival order and drops retransmissions.
-#[derive(Default)]
 struct Server {
+    log_id: LogId,
     log: Vec<Op>,
     seen: HashSet<OpId>,
 }
 
 impl Server {
+    fn new() -> Self {
+        Self {
+            log_id: LogId(1),
+            log: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+
     /// Stores new ops and returns the ids of every op it now holds,
     /// including retransmitted ones, as the `POST /ops` response.
     fn push(&mut self, ops: &[Op]) -> Vec<OpId> {
@@ -81,6 +89,7 @@ impl Server {
         let (tasks, time_entries) = replay_log(self);
         let seq = (!self.log.is_empty()).then_some(Seq(self.log.len() as u64));
         Snapshot {
+            log_id: self.log_id,
             tasks,
             time_entries,
             seq,
@@ -513,7 +522,7 @@ proptest! {
             .enumerate()
             .map(|(device, skew)| Node::new(device, *skew))
             .collect();
-        let mut server = Server::default();
+        let mut server = Server::new();
 
         for action in &actions {
             let node = &mut nodes[target(action)];

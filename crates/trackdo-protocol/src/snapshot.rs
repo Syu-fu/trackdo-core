@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use trackdo_core::lww::Lww;
-use trackdo_core::op::Seq;
+use trackdo_core::op::{LogId, Seq};
 use trackdo_core::replica::Snapshot;
 use trackdo_core::task::{Task, TaskId, TaskStatus};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
@@ -12,10 +12,11 @@ use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 use crate::error::{ProtocolError, decode_title};
 use crate::op::{HlcDto, TaskStatusDto};
 
-/// All tasks and time entries as of `seq`. `seq` is `null` when the log is
-/// still empty.
+/// All tasks and time entries of the log `log_id` as of `seq`. `seq` is
+/// `null` when the log is still empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotDto {
+    pub log_id: Uuid,
     pub seq: Option<u64>,
     pub tasks: Vec<TaskDto>,
     pub time_entries: Vec<TimeEntryDto>,
@@ -52,6 +53,7 @@ pub struct RegisterDto<T> {
 impl From<&Snapshot> for SnapshotDto {
     fn from(snapshot: &Snapshot) -> Self {
         Self {
+            log_id: Uuid::from_u128(snapshot.log_id.0),
             seq: snapshot.seq.map(|Seq(seq)| seq),
             tasks: snapshot.tasks.iter().map(TaskDto::from).collect(),
             time_entries: snapshot
@@ -74,6 +76,7 @@ impl TryFrom<SnapshotDto> for Snapshot {
             .map(Task::try_from)
             .collect::<Result<_, _>>()?;
         Ok(Self {
+            log_id: LogId(dto.log_id.as_u128()),
             tasks,
             time_entries: dto.time_entries.into_iter().map(TimeEntry::from).collect(),
             seq: dto.seq.map(Seq),
@@ -176,6 +179,8 @@ mod tests {
 
     const DEVICE: DeviceId = DeviceId(0x0192_8f39_ffff_7abc_9def_0123_4567_89ab);
     const TASK: TaskId = TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0001);
+    const LOG: LogId = LogId(0x0192_8f30_0000_7000_8000_0000_0000_0001);
+    const LOG_UUID: &str = "01928f30-0000-7000-8000-000000000001";
 
     fn at(wall: u64) -> Hlc {
         Hlc::new(wall, 0, DEVICE)
@@ -222,6 +227,7 @@ mod tests {
     #[test]
     fn snapshot_wire_format() {
         insta::assert_json_snapshot!(SnapshotDto::from(&Snapshot {
+            log_id: LOG,
             tasks: vec![full_task(), partial_task()],
             time_entries: vec![stopped_entry(), running_entry()],
             seq: Some(Seq(42)),
@@ -230,7 +236,12 @@ mod tests {
 
     #[test]
     fn empty_snapshot_wire_format() {
-        insta::assert_json_snapshot!(SnapshotDto::from(&Snapshot::default()));
+        insta::assert_json_snapshot!(SnapshotDto::from(&Snapshot {
+            log_id: LOG,
+            tasks: Vec::new(),
+            time_entries: Vec::new(),
+            seq: None,
+        }));
     }
 
     #[test]
@@ -238,6 +249,7 @@ mod tests {
         let unknown_stop = TimeEntry::empty(TimeEntryId(3), TASK)
             .apply(&TimeEntryChange::StartedAt(Timestamp(10)), at(10));
         let snapshot = Snapshot {
+            log_id: LOG,
             tasks: Vec::new(),
             time_entries: vec![running_entry(), unknown_stop],
             seq: None,
@@ -257,8 +269,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_snapshot_without_log_id() {
+        let json = serde_json::json!({ "seq": null, "tasks": [], "time_entries": [] });
+
+        assert!(serde_json::from_value::<SnapshotDto>(json).is_err());
+    }
+
+    #[test]
     fn rejects_snapshot_without_time_entries() {
-        let json = serde_json::json!({ "seq": null, "tasks": [] });
+        let json = serde_json::json!({ "log_id": LOG_UUID, "seq": null, "tasks": [] });
 
         assert!(serde_json::from_value::<SnapshotDto>(json).is_err());
     }
@@ -324,9 +343,10 @@ mod tests {
         fn json_roundtrip_preserves_snapshot(
             tasks in prop::collection::vec(any_task(), 0..5),
             time_entries in prop::collection::vec(any_entry(), 0..5),
+            log_id in any::<u128>().prop_map(LogId),
             seq in prop::option::of(any::<u64>().prop_map(Seq)),
         ) {
-            let snapshot = Snapshot { tasks, time_entries, seq };
+            let snapshot = Snapshot { log_id, tasks, time_entries, seq };
             let json = serde_json::to_string(&SnapshotDto::from(&snapshot)).unwrap();
             let dto: SnapshotDto = serde_json::from_str(&json).unwrap();
 
