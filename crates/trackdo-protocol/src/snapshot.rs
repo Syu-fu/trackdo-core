@@ -169,7 +169,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
     use trackdo_core::hlc::{DeviceId, Hlc};
@@ -190,7 +190,7 @@ mod tests {
         Title::new(s).unwrap()
     }
 
-    fn full_task() -> Task {
+    pub(crate) fn full_task() -> Task {
         Task::empty(TASK)
             .apply(&TaskChange::Title(title("buy milk")), at(1_730_000_000_000))
             .apply(&TaskChange::Status(TaskStatus::Done), at(1_730_000_000_500))
@@ -215,7 +215,7 @@ mod tests {
             .apply(&TimeEntryChange::Deleted(false), at(1_730_000_360_000))
     }
 
-    fn running_entry() -> TimeEntry {
+    pub(crate) fn running_entry() -> TimeEntry {
         TimeEntry::empty(TimeEntryId(0x0192_8f3a_0000_7000_8000_0000_0000_0e02), TASK)
             .apply(
                 &TimeEntryChange::StartedAt(Timestamp(1_730_000_400_000)),
@@ -293,12 +293,12 @@ mod tests {
         assert_eq!(Task::try_from(dto), Err(ProtocolError::NonCanonicalTitle));
     }
 
-    fn any_hlc() -> impl Strategy<Value = Hlc> {
+    pub(crate) fn any_hlc() -> impl Strategy<Value = Hlc> {
         (any::<u64>(), any::<u32>(), any::<u128>())
             .prop_map(|(wall, counter, device)| Hlc::new(wall, counter, DeviceId(device)))
     }
 
-    fn any_task() -> impl Strategy<Value = Task> {
+    pub(crate) fn any_task() -> impl Strategy<Value = Task> {
         let change = prop_oneof![
             "[a-z]{1,8}".prop_map(|s| TaskChange::Title(title(&s))),
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])
@@ -318,7 +318,7 @@ mod tests {
             })
     }
 
-    fn any_entry() -> impl Strategy<Value = TimeEntry> {
+    pub(crate) fn any_entry() -> impl Strategy<Value = TimeEntry> {
         let time = any::<u64>().prop_map(Timestamp);
         let change = prop_oneof![
             time.clone().prop_map(TimeEntryChange::StartedAt),

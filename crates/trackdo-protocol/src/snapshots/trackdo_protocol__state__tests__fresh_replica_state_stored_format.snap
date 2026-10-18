@@ -1,0 +1,16 @@
+---
+source: crates/trackdo-protocol/src/state.rs
+expression: "ReplicaStateDto::from(&ReplicaState\n{\n    hlc: Hlc::zero(DEVICE), tasks: Vec::new(), time_entries: Vec::new(),\n    pending: Vec::new(), log_id: None, last_seq: None,\n})"
+---
+{
+  "hlc": {
+    "wall_ms": 0,
+    "counter": 0,
+    "device": "01928f39-ffff-7abc-9def-0123456789ab"
+  },
+  "tasks": [],
+  "time_entries": [],
+  "pending": [],
+  "log_id": null,
+  "last_seq": null
+}

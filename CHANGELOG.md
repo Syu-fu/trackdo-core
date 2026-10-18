@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `trackdo_protocol::state::ReplicaStateDto`, a JSON form of `ReplicaState`
+  for hosts to persist between launches. Loading it validates the data the
+  same way as data from the server. It does not go over the wire, so
+  `PROTOCOL_VERSION` is unchanged.
+
 ## [0.3.0] - 2026-10-18
 
 ### Added

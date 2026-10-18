@@ -1,0 +1,83 @@
+---
+source: crates/trackdo-protocol/src/state.rs
+expression: "ReplicaStateDto::from(&state())"
+---
+{
+  "hlc": {
+    "wall_ms": 1730000500000,
+    "counter": 0,
+    "device": "01928f39-ffff-7abc-9def-0123456789ab"
+  },
+  "tasks": [
+    {
+      "id": "01928f3a-0000-7000-8000-000000000001",
+      "title": {
+        "value": "buy milk",
+        "hlc": {
+          "wall_ms": 1730000000000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "status": {
+        "value": "done",
+        "hlc": {
+          "wall_ms": 1730000000500,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "deleted": {
+        "value": false,
+        "hlc": {
+          "wall_ms": 1730000000900,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      }
+    }
+  ],
+  "time_entries": [
+    {
+      "id": "01928f3a-0000-7000-8000-000000000e02",
+      "task_id": "01928f3a-0000-7000-8000-000000000001",
+      "started_at": {
+        "value": 1730000400000,
+        "hlc": {
+          "wall_ms": 1730000400000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "stopped_at": {
+        "value": null,
+        "hlc": {
+          "wall_ms": 1730000400000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "deleted": null
+    }
+  ],
+  "pending": [
+    {
+      "op_id": "01928f3a-1b2c-7d4e-8f90-a1b2c3d4e5f6",
+      "hlc": {
+        "wall_ms": 1730000500000,
+        "counter": 0,
+        "device": "01928f39-ffff-7abc-9def-0123456789ab"
+      },
+      "target": {
+        "type": "task",
+        "task_id": "01928f3a-0000-7000-8000-000000000001",
+        "change": {
+          "field": "title",
+          "value": "buy oat milk"
+        }
+      }
+    }
+  ],
+  "log_id": "01928f30-0000-7000-8000-000000000001",
+  "last_seq": 42
+}

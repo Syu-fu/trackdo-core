@@ -206,7 +206,7 @@ impl From<TaskStatusDto> for TaskStatus {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
     use trackdo_core::title::{Title, TitleError};
@@ -373,7 +373,7 @@ mod tests {
         assert!(serde_json::from_value::<OpDto>(json).is_err());
     }
 
-    fn any_entry_op() -> impl Strategy<Value = Op> {
+    pub(crate) fn any_entry_op() -> impl Strategy<Value = Op> {
         let time = any::<u64>().prop_map(Timestamp);
         let change = prop_oneof![
             time.clone().prop_map(TimeEntryChange::StartedAt),
@@ -402,7 +402,7 @@ mod tests {
             )
     }
 
-    fn any_task_op() -> impl Strategy<Value = Op> {
+    pub(crate) fn any_task_op() -> impl Strategy<Value = Op> {
         let change = prop_oneof![
             "[a-z]{1,8}( [a-z]{1,8})?".prop_map(|s| TaskChange::Title(title(&s))),
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])

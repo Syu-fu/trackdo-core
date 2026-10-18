@@ -9,7 +9,7 @@ the system:
 | Crate | Purpose |
 |---|---|
 | [`trackdo-core`](crates/trackdo-core) | Domain model and sync logic. Pure Rust with no I/O. |
-| [`trackdo-protocol`](crates/trackdo-protocol) | JSON wire format exchanged between clients and the server. |
+| [`trackdo-protocol`](crates/trackdo-protocol) | JSON wire format exchanged between clients and the server, and the stored form of a replica. |
 
 The sync server and the iOS (UniFFI) / Web (WebAssembly) bindings live in
 separate repositories and depend on these crates.
@@ -72,7 +72,8 @@ operations, so stored state catches up with what is shown.
 ### Sans-IO core
 
 `trackdo-core` performs no I/O. Hosts provide the current time and unique ids
-through the `Clock` and `IdGen` traits, and persist `ReplicaState` themselves.
+through the `Clock` and `IdGen` traits, and persist `ReplicaState` themselves,
+e.g. as JSON with `trackdo_protocol::state::ReplicaStateDto`.
 This keeps the core deterministic, easy to test, and portable to iOS, the
 browser and the server.
 
