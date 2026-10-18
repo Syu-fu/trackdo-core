@@ -15,8 +15,8 @@ The sync server and the iOS (UniFFI) / Web (WebAssembly) bindings live in
 separate repositories and depend on these crates.
 
 > **Status:** early development. Tasks with a title and a `todo`/`done`
-> status sync correctly; time tracking is not implemented yet. APIs and the
-> wire format may change before 1.0.
+> status, and time entries with a start and stop time, sync correctly. APIs
+> and the wire format may change before 1.0.
 
 ## Design
 
@@ -31,20 +31,34 @@ client: command → apply locally → pending queue ──POST /ops──▶ ser
 client: apply_remote ◀────────── GET /events (SSE) ─────────────┘ stores, broadcasts
 ```
 
-- **Conflict resolution** – each task field (`title`, `status`, `deleted`) is
+- **Conflict resolution** – each field of a task (`title`, `status`,
+  `deleted`) and of a time entry (`started_at`, `stopped_at`, `deleted`) is
   an independent last-writer-wins register ordered by a
   [Hybrid Logical Clock](https://cse.buffalo.edu/tech-reports/2014-04.pdf).
   Concurrent edits to different fields are both kept, and merging is
   commutative, associative and idempotent.
 - **Deletion wins** – deletion is a tombstone that edits to other fields never
   clear.
-- **No create operation** – a task comes into existence when the first write
-  for its id arrives, so operations may arrive in any order.
+- **No create operation** – a task or time entry comes into existence when
+  the first write for its id arrives, so operations may arrive in any order.
 - **Delivery** – the server orders operations with a per-user sequence number.
   Clients resume the event stream from their last `seq`, and fall back to a
   full snapshot when the log no longer reaches back that far.
 - **Acknowledgement** – pending operations are confirmed by the `POST /ops`
   response, or by receiving them back over the event stream.
+
+### Time tracking
+
+A time entry belongs to one task for its whole life and records a start and
+a stop time (none while running). Only one timer runs at a time: starting one
+stops the others, and completing or deleting a task stops its timer.
+
+Devices that start timers while offline can still end up with several
+running after syncing. Every replica then derives the same outcome without
+coordination: the timer started last keeps running and the others count as
+stopped when it started, while a timer on a deleted task counts as stopped
+when the task was deleted. Replicas write such derived stops back as ordinary
+operations, so stored state catches up with what is shown.
 
 ### Sans-IO core
 
