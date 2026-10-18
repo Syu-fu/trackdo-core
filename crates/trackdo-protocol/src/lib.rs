@@ -4,6 +4,7 @@
 //! `trackdo-core` types at the boundary, where incoming data is validated.
 
 pub mod error;
+pub mod event;
 pub mod op;
 pub mod snapshot;
 

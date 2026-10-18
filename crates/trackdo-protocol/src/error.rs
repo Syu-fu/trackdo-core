@@ -12,6 +12,8 @@ pub enum ProtocolError {
     /// normalized on receipt.
     #[error("title is not in canonical form")]
     NonCanonicalTitle,
+    #[error("event id is not `<log_id>:<seq>`")]
+    InvalidEventId,
 }
 
 pub(crate) fn decode_title(raw: &str) -> Result<Title, ProtocolError> {

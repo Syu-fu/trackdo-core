@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of only moving it forward. Writes that snapshot lacks are queued
   again with their original timestamps, so writes the old log took with it
   reach the server again without overriding anything written after them.
+- `trackdo_protocol::event::EventId`, the SSE event id `<log_id>:<seq>` that
+  clients send back as `Last-Event-ID`, so the server can refuse to resume
+  from a position in a log it no longer has.
 
 ### Changed
 
@@ -25,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Snapshot` no longer implements `Default`.
 - **Breaking:** snapshots on the wire carry `"log_id"`, and
   `PROTOCOL_VERSION` is 3.
+- **Breaking:** `ProtocolError` has a new `InvalidEventId` variant.
 
 ## [0.2.0] - 2026-10-18
 
