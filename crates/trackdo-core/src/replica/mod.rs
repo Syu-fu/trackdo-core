@@ -187,7 +187,17 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     /// `POST /ops` response. Needed because an operation may never be echoed
     /// back, e.g. when a snapshot moves [`Self::last_seq`] past it.
     pub fn acknowledge(&mut self, op_ids: &[OpId]) {
-        self.pending.retain(|op| !op_ids.contains(&op.op_id));
+        self.drop_pending(op_ids);
+    }
+
+    /// Drops operations the server refused for good, e.g. with a validation
+    /// error, so they stop blocking the ones queued after them.
+    ///
+    /// Their writes stay applied locally: register history is not kept, so
+    /// there is nothing to revert to. Such a field differs from the server's
+    /// until a newer write to it arrives from either side.
+    pub fn reject(&mut self, op_ids: &[OpId]) {
+        self.drop_pending(op_ids);
     }
 
     /// Merges a full server snapshot, e.g. on first sync or after the event
@@ -224,6 +234,10 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.hlc = hlc;
         self.last_seq = self.last_seq.max(snapshot.seq);
         Ok(self.heal()?)
+    }
+
+    fn drop_pending(&mut self, op_ids: &[OpId]) {
+        self.pending.retain(|op| !op_ids.contains(&op.op_id));
     }
 
     /// Writes may target a task this replica has not seen yet.
@@ -716,6 +730,34 @@ mod tests {
         replica.acknowledge(&[OpId(u128::MAX)]);
 
         assert_eq!(replica.pending_ops(), ops.as_slice());
+    }
+
+    #[test]
+    fn reject_drops_only_listed_ops() {
+        let mut replica = replica();
+        replica.create("a").unwrap();
+        let ops = replica.pending_ops().to_vec();
+
+        replica.reject(&[ops[0].op_id]);
+
+        assert_eq!(replica.pending_ops(), &ops[1..]);
+    }
+
+    #[test]
+    fn rejected_write_stays_applied_locally() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        replica.acknowledge(&ops_of(&replica));
+        replica.rename(id, "b").unwrap();
+
+        replica.reject(&ops_of(&replica));
+
+        assert!(replica.pending_ops().is_empty());
+        assert_eq!(replica.task(id).unwrap().title(), Some(&title("b")));
+    }
+
+    fn ops_of(replica: &TestReplica) -> Vec<OpId> {
+        replica.pending_ops().iter().map(|op| op.op_id).collect()
     }
 
     #[test]

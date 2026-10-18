@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Replica::reject` drops pending operations the server refused for good, so
+  one invalid operation no longer blocks every later push. The rejected
+  writes stay applied locally until a newer write to the same field arrives.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added

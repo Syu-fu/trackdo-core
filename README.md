@@ -46,6 +46,9 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
   full snapshot when the log no longer reaches back that far.
 - **Acknowledgement** – pending operations are confirmed by the `POST /ops`
   response, or by receiving them back over the event stream.
+- **Rejection** – operations the server refuses for good, e.g. after a bug
+  or a validation mismatch, are dropped with `Replica::reject` so they do not
+  block later ones. Their writes stay applied locally until overwritten.
 
 ### Time tracking
 
