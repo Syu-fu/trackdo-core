@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f2e7bfd637a8ea15e5236d2934f3388050b1e8457d074ef5e3417e8aa752fce3 # shrinks to writes = [(StartedAt(Timestamp(0)), Hlc { wall_ms: 0, counter: 0, device: DeviceId(0) })], now = 0, later = 1

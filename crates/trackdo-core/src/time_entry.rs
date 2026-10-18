@@ -70,8 +70,15 @@ impl TimeEntry {
             .and_then(|stopped| *stopped.value())
     }
 
+    /// Requires both the start and an explicit "still running" write, so an
+    /// entry whose writes have only partly arrived is never taken for a
+    /// running timer.
     pub fn is_running(&self) -> bool {
-        self.started_at.is_some() && self.stopped_at().is_none()
+        let explicitly_running = self
+            .stopped_at
+            .as_ref()
+            .is_some_and(|stopped| stopped.value().is_none());
+        self.started_at.is_some() && explicitly_running
     }
 
     pub fn is_deleted(&self) -> bool {
@@ -89,13 +96,19 @@ impl TimeEntry {
         )
     }
 
-    /// Measured time, counting up to `now` while running. Never negative.
+    /// Measured time, counting up to `now` while running. Never negative,
+    /// and zero until both the start and the stop (or running) writes have
+    /// arrived.
     pub fn duration(&self, now: Timestamp) -> Duration {
-        let Some(Timestamp(started)) = self.started_at() else {
-            return Duration::ZERO;
+        let end = match self.stopped_at.as_ref().map(|stopped| *stopped.value()) {
+            None => return Duration::ZERO,
+            Some(None) => now,
+            Some(Some(stopped)) => stopped,
         };
-        let Timestamp(end) = self.stopped_at().unwrap_or(now);
-        Duration::from_millis(end.saturating_sub(started))
+        self.started_at()
+            .map_or(Duration::ZERO, |Timestamp(started)| {
+                Duration::from_millis(end.0.saturating_sub(started))
+            })
     }
 
     /// Entry after applying `change` written at `hlc`. Stale writes are ignored.
@@ -179,11 +192,19 @@ mod tests {
     }
 
     #[test]
-    fn start_alone_counts_as_running() {
+    fn start_alone_is_not_yet_running() {
         let entry =
             TimeEntry::empty(ID, TASK).apply(&TimeEntryChange::StartedAt(ms(1_000)), at(1, A));
 
-        assert!(entry.is_running());
+        assert!(!entry.is_running());
+    }
+
+    #[test]
+    fn partially_received_entry_measures_nothing() {
+        let entry =
+            TimeEntry::empty(ID, TASK).apply(&TimeEntryChange::StartedAt(ms(1_000)), at(1, A));
+
+        assert_eq!(entry.duration(ms(5_000)), Duration::ZERO);
     }
 
     #[test]
