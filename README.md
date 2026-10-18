@@ -46,6 +46,8 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
   full snapshot when the log no longer reaches back that far. Each log has a
   `log_id`, so a snapshot of a replaced log, e.g. one restored from a backup,
   resets the client's position instead of being mistaken for an older one.
+  The client then sends again, with their original timestamps, the writes
+  that snapshot lacks.
 - **Acknowledgement** – pending operations are confirmed by the `POST /ops`
   response, or by receiving them back over the event stream.
 - **Rejection** – operations the server refuses for good, e.g. after a bug

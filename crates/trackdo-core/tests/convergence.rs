@@ -85,6 +85,14 @@ impl Server {
         ops.iter().map(|op| op.op_id).collect()
     }
 
+    /// Simulates restoring an older backup: the log loses its newest ops and
+    /// becomes a new log.
+    fn roll_back(&mut self, keep: usize) {
+        self.log.truncate(keep % (self.log.len() + 1));
+        self.seen = self.log.iter().map(|op| op.op_id).collect();
+        self.log_id = LogId(self.log_id.0 + 1);
+    }
+
     fn snapshot(&self) -> Snapshot {
         let (tasks, time_entries) = replay_log(self);
         let seq = (!self.log.is_empty()).then_some(Seq(self.log.len() as u64));
@@ -172,7 +180,21 @@ impl Node {
         Timestamp(self.clock.get() - millis)
     }
 
+    /// Resyncs if the server would refuse to stream, as it does when the
+    /// replica's position is in another log (or in none it knows of).
+    /// Returns whether streaming may go ahead.
+    fn resume(&mut self, server: &Server) -> bool {
+        let resumable = self.replica.log_id() == Some(server.log_id);
+        if !resumable {
+            self.resync(server);
+        }
+        resumable
+    }
+
     fn pull(&mut self, server: &Server, max: usize) {
+        if !self.resume(server) {
+            return;
+        }
         let events: Vec<_> = server
             .events_after(self.replica.last_seq())
             .take(max)
@@ -183,6 +205,9 @@ impl Node {
 
     /// Replays already-delivered events, as after an SSE reconnect.
     fn replay(&mut self, server: &Server, count: usize) {
+        if !self.resume(server) {
+            return;
+        }
         let events: Vec<_> = server
             .events_after(None)
             .take_while(|(seq, _)| Some(*seq) <= self.replica.last_seq())
@@ -201,6 +226,8 @@ impl Node {
     /// Runs `step`, which may emit ops (commands, or healing after receiving
     /// `received`). Emitted ops must be newer than everything the node has
     /// seen, so a write made after observing another always wins over it.
+    /// The exception is a write held before `step` sent again unchanged
+    /// after the server's log was replaced.
     fn emitting<T>(
         &mut self,
         step: impl FnOnce(&mut Replica<SimClock, DeviceIds>) -> T,
@@ -212,6 +239,7 @@ impl Node {
             .iter()
             .map(|op| op.op_id)
             .collect();
+        let held: HashSet<Hlc> = self.held_hlcs().collect();
         let result = step(&mut self.replica);
         for hlc in received {
             self.observe(hlc);
@@ -225,13 +253,19 @@ impl Node {
             .collect();
         for hlc in emitted {
             assert!(
-                Some(hlc) > self.max_seen,
+                Some(hlc) > self.max_seen || held.contains(&hlc),
                 "emitted {hlc:?} is not newer than observed {:?}",
                 self.max_seen
             );
             self.observe(hlc);
         }
         result
+    }
+
+    fn held_hlcs(&self) -> impl Iterator<Item = Hlc> + '_ {
+        let tasks = self.replica.tasks().flat_map(task_hlcs);
+        let entries = self.replica.time_entries().flat_map(entry_hlcs);
+        tasks.chain(entries)
     }
 
     fn observe(&mut self, hlc: Hlc) {
@@ -321,6 +355,9 @@ enum Action {
     Tick(usize, u64),
     Resync(usize),
     Restart(usize),
+    /// The server restores a backup holding this many of its ops (modulo the
+    /// log length).
+    RollBack(usize),
 }
 
 fn title() -> impl Strategy<Value = String> {
@@ -355,6 +392,7 @@ fn action() -> impl Strategy<Value = Action> {
         1 => (node.clone(), 0u64..3).prop_map(|(n, delta)| Action::Tick(n, delta)),
         1 => node.clone().prop_map(Action::Resync),
         1 => node.prop_map(Action::Restart),
+        1 => any::<usize>().prop_map(Action::RollBack),
     ]
 }
 
@@ -444,6 +482,7 @@ fn run(node: &mut Node, server: &mut Server, action: &Action) {
         Action::Tick(_, delta) => node.clock.set(node.clock.get() + delta),
         Action::Resync(_) => node.resync(server),
         Action::Restart(_) => node.restart(),
+        Action::RollBack(keep) => server.roll_back(*keep),
     }
 }
 
@@ -456,6 +495,7 @@ fn target(action: &Action) -> usize {
         | Action::Tick(n, _)
         | Action::Resync(n)
         | Action::Restart(n) => *n,
+        Action::RollBack(_) => 0,
     }
 }
 

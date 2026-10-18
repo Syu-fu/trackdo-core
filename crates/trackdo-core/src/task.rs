@@ -109,6 +109,23 @@ impl Task {
         }
     }
 
+    /// The write each field holds, as it would be sent again.
+    pub(crate) fn writes(&self) -> impl Iterator<Item = (TaskChange, Hlc)> {
+        let title = self
+            .title
+            .as_ref()
+            .map(|title| (TaskChange::Title(title.value().clone()), title.hlc()));
+        let status = self
+            .status
+            .as_ref()
+            .map(|status| (TaskChange::Status(*status.value()), status.hlc()));
+        let deleted = self
+            .deleted
+            .as_ref()
+            .map(|deleted| (TaskChange::Deleted(*deleted.value()), deleted.hlc()));
+        [title, status, deleted].into_iter().flatten()
+    }
+
     /// Timestamp of the most recent write to any field.
     pub(crate) fn newest_hlc(&self) -> Option<Hlc> {
         let title = self.title.as_ref().map(Lww::hlc);

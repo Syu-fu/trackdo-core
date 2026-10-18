@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LogId` identifies a server operation log. Replicas learn it from
   snapshots and expose it as `Replica::log_id`; a snapshot of another log,
   e.g. after the server was restored from a backup, replaces `last_seq`
-  instead of only moving it forward.
+  instead of only moving it forward. Writes that snapshot lacks are queued
+  again with their original timestamps, so writes the old log took with it
+  reach the server again without overriding anything written after them.
 
 ### Changed
 

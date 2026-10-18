@@ -5,6 +5,7 @@
 //! once, so the UI never waits on the network.
 
 mod healing;
+mod republish;
 mod task_commands;
 #[cfg(test)]
 mod test_support;
@@ -218,7 +219,9 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     ///
     /// A snapshot of another log than the one [`Self::last_seq`] refers to,
     /// e.g. after the server was restored from a backup, replaces the cursor
-    /// instead of only moving it forward.
+    /// instead of only moving it forward. Writes the snapshot lacks are then
+    /// queued again with their original timestamps, since the old log may
+    /// have taken acknowledged ones with it.
     ///
     /// Pending operations are kept: they are re-sent and acknowledged as usual.
     /// Timers left to be treated as stopped are healed as in
@@ -249,12 +252,13 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             self.entries.insert(entry.id(), merged);
         }
         self.hlc = hlc;
-        self.last_seq = if self.log_id == Some(snapshot.log_id) {
-            self.last_seq.max(snapshot.seq)
+        if self.log_id == Some(snapshot.log_id) {
+            self.last_seq = self.last_seq.max(snapshot.seq);
         } else {
-            snapshot.seq
-        };
-        self.log_id = Some(snapshot.log_id);
+            self.republish(snapshot);
+            self.last_seq = snapshot.seq;
+            self.log_id = Some(snapshot.log_id);
+        }
         Ok(self.heal()?)
     }
 

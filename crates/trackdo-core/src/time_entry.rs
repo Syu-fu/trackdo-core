@@ -158,6 +158,23 @@ impl TimeEntry {
         }
     }
 
+    /// The write each field holds, as it would be sent again.
+    pub(crate) fn writes(&self) -> impl Iterator<Item = (TimeEntryChange, Hlc)> {
+        let started = self
+            .started_at
+            .as_ref()
+            .map(|started| (TimeEntryChange::StartedAt(*started.value()), started.hlc()));
+        let stopped = self
+            .stopped_at
+            .as_ref()
+            .map(|stopped| (TimeEntryChange::StoppedAt(*stopped.value()), stopped.hlc()));
+        let deleted = self
+            .deleted
+            .as_ref()
+            .map(|deleted| (TimeEntryChange::Deleted(*deleted.value()), deleted.hlc()));
+        [started, stopped, deleted].into_iter().flatten()
+    }
+
     /// Timestamp of the most recent write to any field.
     pub(crate) fn newest_hlc(&self) -> Option<Hlc> {
         let started = self.started_at.as_ref().map(Lww::hlc);
