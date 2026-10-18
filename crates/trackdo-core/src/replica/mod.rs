@@ -71,6 +71,14 @@ pub struct ReplicaState {
     pub last_seq: Option<Seq>,
 }
 
+/// Full server state as of `seq`, which is `None` while the log is empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub tasks: Vec<Task>,
+    pub time_entries: Vec<TimeEntry>,
+    pub seq: Option<Seq>,
+}
+
 pub struct Replica<C, G> {
     clock: C,
     ids: G,
@@ -160,7 +168,12 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         if self.last_seq.is_some_and(|last| seq <= last) {
             return Ok(());
         }
-        self.check_entry_task(&op.target)?;
+        if let OpTarget::TimeEntry {
+            entry_id, task_id, ..
+        } = op.target
+        {
+            self.check_entry_task(entry_id, task_id)?;
+        }
         let hlc = self.hlc.receive(&op.hlc, self.clock.now_millis())?;
 
         self.apply_target(&op.target, op.hlc);
@@ -177,25 +190,39 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.pending.retain(|op| !op_ids.contains(&op.op_id));
     }
 
-    /// Merges a full server snapshot taken at `seq`, e.g. on first sync or
-    /// after the event log no longer reaches back to [`Self::last_seq`].
+    /// Merges a full server snapshot, e.g. on first sync or after the event
+    /// log no longer reaches back to [`Self::last_seq`].
     ///
     /// Pending operations are kept: they are re-sent and acknowledged as usual.
     /// Timers left to be treated as stopped are healed as in
-    /// [`Self::apply_remote`].
-    pub fn apply_snapshot(&mut self, tasks: &[Task], seq: Option<Seq>) -> Result<(), RemoteError> {
-        let newest = tasks.iter().filter_map(Task::newest_hlc).max();
-        let hlc = match newest {
+    /// [`Self::apply_remote`]. A snapshot moving a known entry to another task
+    /// is rejected as a whole.
+    pub fn apply_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), RemoteError> {
+        for entry in &snapshot.time_entries {
+            self.check_entry_task(entry.id(), entry.task_id())?;
+        }
+        let task_hlcs = snapshot.tasks.iter().filter_map(Task::newest_hlc);
+        let entry_hlcs = snapshot
+            .time_entries
+            .iter()
+            .filter_map(TimeEntry::newest_hlc);
+        let hlc = match task_hlcs.chain(entry_hlcs).max() {
             Some(newest) => self.hlc.receive(&newest, self.clock.now_millis())?,
             None => self.hlc,
         };
 
-        for task in tasks {
+        for task in &snapshot.tasks {
             let merged = self.task_or_empty(task.id()).merge(task);
             self.tasks.insert(task.id(), merged);
         }
+        for entry in &snapshot.time_entries {
+            let merged = self
+                .entry_or_empty(entry.id(), entry.task_id())
+                .merge(entry);
+            self.entries.insert(entry.id(), merged);
+        }
         self.hlc = hlc;
-        self.last_seq = self.last_seq.max(seq);
+        self.last_seq = self.last_seq.max(snapshot.seq);
         Ok(self.heal()?)
     }
 
@@ -222,18 +249,14 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         }
     }
 
-    fn check_entry_task(&self, target: &OpTarget) -> Result<(), RemoteError> {
-        let OpTarget::TimeEntry {
-            entry_id, task_id, ..
-        } = target
-        else {
-            return Ok(());
-        };
-        match self.entries.get(entry_id) {
-            Some(entry) if entry.task_id() != *task_id => Err(RemoteError::TaskMismatch {
-                entry: *entry_id,
+    /// An entry's task never changes, so remote data claiming otherwise is
+    /// rejected.
+    fn check_entry_task(&self, entry_id: TimeEntryId, task_id: TaskId) -> Result<(), RemoteError> {
+        match self.entries.get(&entry_id) {
+            Some(entry) if entry.task_id() != task_id => Err(RemoteError::TaskMismatch {
+                entry: entry_id,
                 expected: entry.task_id(),
-                actual: *task_id,
+                actual: task_id,
             }),
             _ => Ok(()),
         }
@@ -307,6 +330,7 @@ mod tests {
     use super::test_support::*;
     use super::*;
     use crate::task::TaskStatus;
+    use crate::time_entry::TimeEntryChange;
 
     fn remote_op(op_id: u128, task_id: TaskId, wall: u64, change: TaskChange) -> Op {
         Op::task(OpId(op_id), task_id, Hlc::new(wall, 0, OTHER), change)
@@ -444,6 +468,108 @@ mod tests {
         Task::empty(id).apply(&change, Hlc::new(wall, 0, OTHER))
     }
 
+    fn tasks_only(tasks: Vec<Task>, seq: Option<Seq>) -> Snapshot {
+        Snapshot {
+            tasks,
+            time_entries: Vec::new(),
+            seq,
+        }
+    }
+
+    fn snapshot_entry(id: u128, task: TaskId, wall: u64, change: TimeEntryChange) -> TimeEntry {
+        TimeEntry::empty(TimeEntryId(id), task).apply(&change, Hlc::new(wall, 0, OTHER))
+    }
+
+    #[test]
+    fn apply_snapshot_merges_time_entries_field_by_field() {
+        let mut replica = replica();
+        let task = replica.create("work").unwrap();
+        let local = replica
+            .add_entry(task, Timestamp(100), Timestamp(200))
+            .unwrap();
+        let snapshot = Snapshot {
+            tasks: Vec::new(),
+            time_entries: vec![
+                snapshot_entry(local.0, task, NOW + 1, TimeEntryChange::Deleted(true)).apply(
+                    &TimeEntryChange::StartedAt(Timestamp(50)),
+                    Hlc::new(NOW - 1, 0, OTHER),
+                ),
+                snapshot_entry(500, task, NOW, TimeEntryChange::StartedAt(Timestamp(300))),
+            ],
+            seq: Some(Seq(10)),
+        };
+
+        replica.apply_snapshot(&snapshot).unwrap();
+
+        let merged = replica.time_entry(local).unwrap();
+        assert!(merged.is_deleted());
+        assert_eq!(merged.started_at(), Some(Timestamp(100)));
+        let unknown = replica.time_entry(TimeEntryId(500)).unwrap();
+        assert_eq!(unknown.task_id(), task);
+        assert_eq!(unknown.started_at(), Some(Timestamp(300)));
+        assert_eq!(replica.last_seq(), Some(Seq(10)));
+    }
+
+    #[test]
+    fn apply_snapshot_rejects_entry_of_another_task() {
+        let mut replica = replica();
+        let task = replica.create("work").unwrap();
+        let local = replica
+            .add_entry(task, Timestamp(100), Timestamp(200))
+            .unwrap();
+        let before = replica.state();
+        let snapshot = Snapshot {
+            tasks: vec![snapshot_task(TaskId(500), NOW, TaskChange::Deleted(true))],
+            time_entries: vec![snapshot_entry(
+                local.0,
+                TaskId(77),
+                NOW,
+                TimeEntryChange::Deleted(true),
+            )],
+            seq: Some(Seq(10)),
+        };
+
+        let result = replica.apply_snapshot(&snapshot);
+
+        assert_eq!(
+            result,
+            Err(RemoteError::TaskMismatch {
+                entry: local,
+                expected: task,
+                actual: TaskId(77),
+            })
+        );
+        assert_eq!(replica.state(), before);
+    }
+
+    #[test]
+    fn local_writes_after_snapshot_are_newer_than_its_entries() {
+        let mut replica = replica();
+        let task = replica.create("work").unwrap();
+        let entry = TimeEntryId(500);
+        let future = NOW + 60_000;
+        let snapshot = Snapshot {
+            tasks: Vec::new(),
+            time_entries: vec![
+                snapshot_entry(500, task, future, TimeEntryChange::StartedAt(Timestamp(10))).apply(
+                    &TimeEntryChange::StoppedAt(Some(Timestamp(20))),
+                    Hlc::new(future, 0, OTHER),
+                ),
+            ],
+            seq: Some(Seq(1)),
+        };
+        replica.apply_snapshot(&snapshot).unwrap();
+
+        replica
+            .edit_times(entry, Timestamp(5), Some(Timestamp(20)))
+            .unwrap();
+
+        assert_eq!(
+            replica.time_entry(entry).unwrap().started_at(),
+            Some(Timestamp(5))
+        );
+    }
+
     #[test]
     fn state_roundtrips_through_restore() {
         let mut replica = replica();
@@ -491,7 +617,9 @@ mod tests {
             snapshot_task(unknown, NOW, TaskChange::Title(title("remote"))),
         ];
 
-        replica.apply_snapshot(&snapshot, Some(Seq(10))).unwrap();
+        replica
+            .apply_snapshot(&tasks_only(snapshot, Some(Seq(10))))
+            .unwrap();
 
         let task = replica.task(local).unwrap();
         assert_eq!(task.title(), Some(&title("local")));
@@ -509,7 +637,9 @@ mod tests {
         replica.create("a").unwrap();
         let pending = replica.pending_ops().to_vec();
 
-        replica.apply_snapshot(&[], Some(Seq(10))).unwrap();
+        replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(10))))
+            .unwrap();
 
         assert_eq!(replica.pending_ops(), pending.as_slice());
     }
@@ -517,10 +647,14 @@ mod tests {
     #[test]
     fn apply_snapshot_never_moves_cursor_backwards() {
         let mut replica = replica();
-        replica.apply_snapshot(&[], Some(Seq(10))).unwrap();
+        replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(10))))
+            .unwrap();
 
-        replica.apply_snapshot(&[], Some(Seq(4))).unwrap();
-        replica.apply_snapshot(&[], None).unwrap();
+        replica
+            .apply_snapshot(&tasks_only(vec![], Some(Seq(4))))
+            .unwrap();
+        replica.apply_snapshot(&Snapshot::default()).unwrap();
 
         assert_eq!(replica.last_seq(), Some(Seq(10)));
     }
@@ -531,14 +665,14 @@ mod tests {
         let id = TaskId(500);
         let future = NOW + 60_000;
         replica
-            .apply_snapshot(
-                &[snapshot_task(
+            .apply_snapshot(&tasks_only(
+                vec![snapshot_task(
                     id,
                     future,
                     TaskChange::Title(title("remote")),
                 )],
                 Some(Seq(1)),
-            )
+            ))
             .unwrap();
 
         replica.rename(id, "local").unwrap();
@@ -555,7 +689,7 @@ mod tests {
             Hlc::new(NOW, u32::MAX, OTHER),
         );
 
-        let result = replica.apply_snapshot(&[task], Some(Seq(1)));
+        let result = replica.apply_snapshot(&tasks_only(vec![task], Some(Seq(1))));
 
         assert_eq!(result, Err(RemoteError::Clock(HlcError::CounterOverflow)));
         assert!(replica.task(id).is_none());
@@ -590,7 +724,9 @@ mod tests {
         let id = replica.create("a").unwrap();
         let sent: Vec<OpId> = replica.pending_ops().iter().map(|op| op.op_id).collect();
         let snapshot = vec![replica.task(id).unwrap().clone()];
-        replica.apply_snapshot(&snapshot, Some(Seq(2))).unwrap();
+        replica
+            .apply_snapshot(&tasks_only(snapshot, Some(Seq(2))))
+            .unwrap();
 
         replica.acknowledge(&sent);
 

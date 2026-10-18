@@ -5,16 +5,20 @@ use uuid::Uuid;
 
 use trackdo_core::lww::Lww;
 use trackdo_core::op::Seq;
+use trackdo_core::replica::Snapshot;
 use trackdo_core::task::{Task, TaskId, TaskStatus};
+use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
 use crate::error::{ProtocolError, decode_title};
 use crate::op::{HlcDto, TaskStatusDto};
 
-/// All tasks as of `seq`. `seq` is `null` when the log is still empty.
+/// All tasks and time entries as of `seq`. `seq` is `null` when the log is
+/// still empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotDto {
     pub seq: Option<u64>,
     pub tasks: Vec<TaskDto>,
+    pub time_entries: Vec<TimeEntryDto>,
 }
 
 /// A task with every field's register, so receivers can merge it exactly.
@@ -26,28 +30,54 @@ pub struct TaskDto {
     pub deleted: Option<RegisterDto<bool>>,
 }
 
+/// A time entry with every field's register. Times are Unix milliseconds.
+///
+/// A `stopped_at` register whose value is `null` marks a running timer, while
+/// a `null` register means no stop or start write has been seen yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeEntryDto {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub started_at: Option<RegisterDto<u64>>,
+    pub stopped_at: Option<RegisterDto<Option<u64>>>,
+    pub deleted: Option<RegisterDto<bool>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterDto<T> {
     pub value: T,
     pub hlc: HlcDto,
 }
 
-impl SnapshotDto {
-    pub fn new(tasks: &[Task], seq: Option<Seq>) -> Self {
+impl From<&Snapshot> for SnapshotDto {
+    fn from(snapshot: &Snapshot) -> Self {
         Self {
-            seq: seq.map(|Seq(seq)| seq),
-            tasks: tasks.iter().map(TaskDto::from).collect(),
+            seq: snapshot.seq.map(|Seq(seq)| seq),
+            tasks: snapshot.tasks.iter().map(TaskDto::from).collect(),
+            time_entries: snapshot
+                .time_entries
+                .iter()
+                .map(TimeEntryDto::from)
+                .collect(),
         }
     }
+}
 
-    /// Validates and converts into the arguments of `Replica::apply_snapshot`.
-    pub fn into_core(self) -> Result<(Vec<Task>, Option<Seq>), ProtocolError> {
-        let tasks = self
+/// Validates the snapshot for `Replica::apply_snapshot`.
+impl TryFrom<SnapshotDto> for Snapshot {
+    type Error = ProtocolError;
+
+    fn try_from(dto: SnapshotDto) -> Result<Self, Self::Error> {
+        let tasks = dto
             .tasks
             .into_iter()
             .map(Task::try_from)
             .collect::<Result<_, _>>()?;
-        Ok((tasks, self.seq.map(Seq)))
+        Ok(Self {
+            tasks,
+            time_entries: dto.time_entries.into_iter().map(TimeEntry::from).collect(),
+            seq: dto.seq.map(Seq),
+        })
     }
 }
 
@@ -76,16 +106,45 @@ impl TryFrom<TaskDto> for Task {
             .title
             .map(|reg| Ok::<_, ProtocolError>(Lww::new(decode_title(&reg.value)?, reg.hlc.into())))
             .transpose()?;
-        let status = dto
-            .status
-            .map(|reg| Lww::new(TaskStatus::from(reg.value), reg.hlc.into()));
-        let deleted = dto.deleted.map(|reg| Lww::new(reg.value, reg.hlc.into()));
+        let status = dto.status.map(|reg| decode(reg, TaskStatus::from));
+        let deleted = dto.deleted.map(|reg| decode(reg, |deleted| deleted));
         Ok(Self::from_registers(
             TaskId(dto.id.as_u128()),
             title,
             status,
             deleted,
         ))
+    }
+}
+
+impl From<&TimeEntry> for TimeEntryDto {
+    fn from(entry: &TimeEntry) -> Self {
+        Self {
+            id: Uuid::from_u128(entry.id().0),
+            task_id: Uuid::from_u128(entry.task_id().0),
+            started_at: entry
+                .started_at_register()
+                .map(|reg| encode(reg, |Timestamp(started)| *started)),
+            stopped_at: entry
+                .stopped_at_register()
+                .map(|reg| encode(reg, |stopped| stopped.map(|Timestamp(stopped)| stopped))),
+            deleted: entry
+                .deleted_register()
+                .map(|reg| encode(reg, |deleted| *deleted)),
+        }
+    }
+}
+
+impl From<TimeEntryDto> for TimeEntry {
+    fn from(dto: TimeEntryDto) -> Self {
+        Self::from_registers(
+            TimeEntryId(dto.id.as_u128()),
+            TaskId(dto.task_id.as_u128()),
+            dto.started_at.map(|reg| decode(reg, Timestamp)),
+            dto.stopped_at
+                .map(|reg| decode(reg, |stopped| stopped.map(Timestamp))),
+            dto.deleted.map(|reg| decode(reg, |deleted| deleted)),
+        )
     }
 }
 
@@ -99,15 +158,24 @@ where
     }
 }
 
+fn decode<T, U>(register: RegisterDto<T>, value: impl FnOnce(T) -> U) -> Lww<U>
+where
+    U: Clone + Ord,
+{
+    Lww::new(value(register.value), register.hlc.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
     use trackdo_core::hlc::{DeviceId, Hlc};
     use trackdo_core::task::TaskChange;
+    use trackdo_core::time_entry::TimeEntryChange;
     use trackdo_core::title::Title;
 
     const DEVICE: DeviceId = DeviceId(0x0192_8f39_ffff_7abc_9def_0123_4567_89ab);
+    const TASK: TaskId = TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0001);
 
     fn at(wall: u64) -> Hlc {
         Hlc::new(wall, 0, DEVICE)
@@ -118,7 +186,7 @@ mod tests {
     }
 
     fn full_task() -> Task {
-        Task::empty(TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0001))
+        Task::empty(TASK)
             .apply(&TaskChange::Title(title("buy milk")), at(1_730_000_000_000))
             .apply(&TaskChange::Status(TaskStatus::Done), at(1_730_000_000_500))
             .apply(&TaskChange::Deleted(false), at(1_730_000_000_900))
@@ -129,17 +197,70 @@ mod tests {
             .apply(&TaskChange::Status(TaskStatus::Todo), at(1_730_000_001_000))
     }
 
+    fn stopped_entry() -> TimeEntry {
+        TimeEntry::empty(TimeEntryId(0x0192_8f3a_0000_7000_8000_0000_0000_0e01), TASK)
+            .apply(
+                &TimeEntryChange::StartedAt(Timestamp(1_730_000_000_000)),
+                at(1_730_000_000_000),
+            )
+            .apply(
+                &TimeEntryChange::StoppedAt(Some(Timestamp(1_730_000_360_000))),
+                at(1_730_000_360_000),
+            )
+            .apply(&TimeEntryChange::Deleted(false), at(1_730_000_360_000))
+    }
+
+    fn running_entry() -> TimeEntry {
+        TimeEntry::empty(TimeEntryId(0x0192_8f3a_0000_7000_8000_0000_0000_0e02), TASK)
+            .apply(
+                &TimeEntryChange::StartedAt(Timestamp(1_730_000_400_000)),
+                at(1_730_000_400_000),
+            )
+            .apply(&TimeEntryChange::StoppedAt(None), at(1_730_000_400_000))
+    }
+
     #[test]
     fn snapshot_wire_format() {
-        insta::assert_json_snapshot!(SnapshotDto::new(
-            &[full_task(), partial_task()],
-            Some(Seq(42))
-        ));
+        insta::assert_json_snapshot!(SnapshotDto::from(&Snapshot {
+            tasks: vec![full_task(), partial_task()],
+            time_entries: vec![stopped_entry(), running_entry()],
+            seq: Some(Seq(42)),
+        }));
     }
 
     #[test]
     fn empty_snapshot_wire_format() {
-        insta::assert_json_snapshot!(SnapshotDto::new(&[], None));
+        insta::assert_json_snapshot!(SnapshotDto::from(&Snapshot::default()));
+    }
+
+    #[test]
+    fn distinguishes_running_entry_from_unknown_stop() {
+        let unknown_stop = TimeEntry::empty(TimeEntryId(3), TASK)
+            .apply(&TimeEntryChange::StartedAt(Timestamp(10)), at(10));
+        let snapshot = Snapshot {
+            tasks: Vec::new(),
+            time_entries: vec![running_entry(), unknown_stop],
+            seq: None,
+        };
+        let json = serde_json::to_value(SnapshotDto::from(&snapshot)).unwrap();
+
+        assert_eq!(
+            json["time_entries"][0]["stopped_at"]["value"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["time_entries"][1]["stopped_at"],
+            serde_json::Value::Null
+        );
+        let dto: SnapshotDto = serde_json::from_value(json).unwrap();
+        assert_eq!(Snapshot::try_from(dto), Ok(snapshot));
+    }
+
+    #[test]
+    fn rejects_snapshot_without_time_entries() {
+        let json = serde_json::json!({ "seq": null, "tasks": [] });
+
+        assert!(serde_json::from_value::<SnapshotDto>(json).is_err());
     }
 
     #[test]
@@ -153,6 +274,11 @@ mod tests {
         assert_eq!(Task::try_from(dto), Err(ProtocolError::NonCanonicalTitle));
     }
 
+    fn any_hlc() -> impl Strategy<Value = Hlc> {
+        (any::<u64>(), any::<u32>(), any::<u128>())
+            .prop_map(|(wall, counter, device)| Hlc::new(wall, counter, DeviceId(device)))
+    }
+
     fn any_task() -> impl Strategy<Value = Task> {
         let change = prop_oneof![
             "[a-z]{1,8}".prop_map(|s| TaskChange::Title(title(&s))),
@@ -160,28 +286,51 @@ mod tests {
                 .prop_map(TaskChange::Status),
             any::<bool>().prop_map(TaskChange::Deleted),
         ];
-        let write = (change, any::<u64>(), any::<u32>(), any::<u128>()).prop_map(
-            |(change, wall, counter, device)| (change, Hlc::new(wall, counter, DeviceId(device))),
-        );
-        (any::<u128>(), prop::collection::vec(write, 0..5)).prop_map(|(id, writes)| {
-            writes
-                .iter()
-                .fold(Task::empty(TaskId(id)), |task, (change, hlc)| {
-                    task.apply(change, *hlc)
-                })
-        })
+        (
+            any::<u128>(),
+            prop::collection::vec((change, any_hlc()), 0..5),
+        )
+            .prop_map(|(id, writes)| {
+                writes
+                    .iter()
+                    .fold(Task::empty(TaskId(id)), |task, (change, hlc)| {
+                        task.apply(change, *hlc)
+                    })
+            })
+    }
+
+    fn any_entry() -> impl Strategy<Value = TimeEntry> {
+        let time = any::<u64>().prop_map(Timestamp);
+        let change = prop_oneof![
+            time.clone().prop_map(TimeEntryChange::StartedAt),
+            prop::option::of(time).prop_map(TimeEntryChange::StoppedAt),
+            any::<bool>().prop_map(TimeEntryChange::Deleted),
+        ];
+        (
+            any::<u128>(),
+            any::<u128>(),
+            prop::collection::vec((change, any_hlc()), 0..5),
+        )
+            .prop_map(|(id, task, writes)| {
+                writes.iter().fold(
+                    TimeEntry::empty(TimeEntryId(id), TaskId(task)),
+                    |entry, (change, hlc)| entry.apply(change, *hlc),
+                )
+            })
     }
 
     proptest! {
         #[test]
         fn json_roundtrip_preserves_snapshot(
             tasks in prop::collection::vec(any_task(), 0..5),
+            time_entries in prop::collection::vec(any_entry(), 0..5),
             seq in prop::option::of(any::<u64>().prop_map(Seq)),
         ) {
-            let json = serde_json::to_string(&SnapshotDto::new(&tasks, seq)).unwrap();
+            let snapshot = Snapshot { tasks, time_entries, seq };
+            let json = serde_json::to_string(&SnapshotDto::from(&snapshot)).unwrap();
             let dto: SnapshotDto = serde_json::from_str(&json).unwrap();
 
-            prop_assert_eq!(dto.into_core(), Ok((tasks, seq)));
+            prop_assert_eq!(Snapshot::try_from(dto), Ok(snapshot));
         }
     }
 }

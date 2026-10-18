@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operations or snapshots, so stored state catches up with what is shown.
 - Time entry operations on the wire:
   `"target": { "type": "time_entry", "entry_id", "task_id", "change" }`.
+- Snapshots carry time entries, both in core (`Snapshot::time_entries`) and
+  on the wire (`"time_entries"`, with every field's register). `TimeEntry`
+  exposes its registers and can be rebuilt with `from_registers`.
 
 ### Changed
 
@@ -37,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"target": { "type": "task", ... }`. `PROTOCOL_VERSION` is now 2.
 - **Breaking:** `IdGen` requires `time_entry_id`, and `ReplicaState` gains
   `time_entries`.
+- **Breaking:** `Replica::apply_snapshot` takes a `Snapshot`, and rejects one
+  that moves a known time entry to another task. `SnapshotDto::new` and
+  `into_core` are replaced by `From<&Snapshot>` and `TryFrom<SnapshotDto>`, and
+  the wire snapshot requires `"time_entries"`.
 
 ## [0.1.0] - 2026-10-17
 

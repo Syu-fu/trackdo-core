@@ -1,6 +1,6 @@
 ---
 source: crates/trackdo-protocol/src/snapshot.rs
-expression: "SnapshotDto::new(&[full_task(), partial_task()], Some(Seq(42)))"
+expression: "SnapshotDto::from(&Snapshot\n{\n    tasks: vec![full_task(), partial_task()], time_entries:\n    vec![stopped_entry(), running_entry()], seq: Some(Seq(42)),\n})"
 ---
 {
   "seq": 42,
@@ -39,6 +39,57 @@ expression: "SnapshotDto::new(&[full_task(), partial_task()], Some(Seq(42)))"
         "value": "todo",
         "hlc": {
           "wall_ms": 1730000001000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "deleted": null
+    }
+  ],
+  "time_entries": [
+    {
+      "id": "01928f3a-0000-7000-8000-000000000e01",
+      "task_id": "01928f3a-0000-7000-8000-000000000001",
+      "started_at": {
+        "value": 1730000000000,
+        "hlc": {
+          "wall_ms": 1730000000000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "stopped_at": {
+        "value": 1730000360000,
+        "hlc": {
+          "wall_ms": 1730000360000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "deleted": {
+        "value": false,
+        "hlc": {
+          "wall_ms": 1730000360000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      }
+    },
+    {
+      "id": "01928f3a-0000-7000-8000-000000000e02",
+      "task_id": "01928f3a-0000-7000-8000-000000000001",
+      "started_at": {
+        "value": 1730000400000,
+        "hlc": {
+          "wall_ms": 1730000400000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "stopped_at": {
+        "value": null,
+        "hlc": {
+          "wall_ms": 1730000400000,
           "counter": 0,
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }

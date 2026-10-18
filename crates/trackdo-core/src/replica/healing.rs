@@ -28,8 +28,8 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::RemoteError;
     use super::super::test_support::*;
+    use super::super::{RemoteError, Snapshot};
     use crate::hlc::Hlc;
     use crate::op::{Op, OpId, OpTarget, Seq};
     use crate::task::{Task, TaskChange, TaskId};
@@ -186,7 +186,13 @@ mod tests {
         let deleted =
             Task::empty(task).apply(&TaskChange::Deleted(true), Hlc::new(NOW + 30, 0, OTHER));
 
-        replica.apply_snapshot(&[deleted], Some(Seq(5))).unwrap();
+        replica
+            .apply_snapshot(&Snapshot {
+                tasks: vec![deleted],
+                time_entries: Vec::new(),
+                seq: Some(Seq(5)),
+            })
+            .unwrap();
 
         assert_eq!(stops_written(&replica), vec![(id, ms(NOW + 30))]);
     }

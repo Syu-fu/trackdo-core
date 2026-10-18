@@ -50,12 +50,41 @@ impl TimeEntry {
         }
     }
 
+    /// Rebuilds an entry from previously exported registers.
+    pub const fn from_registers(
+        id: TimeEntryId,
+        task_id: TaskId,
+        started_at: Option<Lww<Timestamp>>,
+        stopped_at: Option<Lww<Option<Timestamp>>>,
+        deleted: Option<Lww<bool>>,
+    ) -> Self {
+        Self {
+            id,
+            task_id,
+            started_at,
+            stopped_at,
+            deleted,
+        }
+    }
+
     pub const fn id(&self) -> TimeEntryId {
         self.id
     }
 
     pub const fn task_id(&self) -> TaskId {
         self.task_id
+    }
+
+    pub const fn started_at_register(&self) -> Option<&Lww<Timestamp>> {
+        self.started_at.as_ref()
+    }
+
+    pub const fn stopped_at_register(&self) -> Option<&Lww<Option<Timestamp>>> {
+        self.stopped_at.as_ref()
+    }
+
+    pub const fn deleted_register(&self) -> Option<&Lww<bool>> {
+        self.deleted.as_ref()
     }
 
     /// `None` until a start write has been received.
@@ -127,6 +156,14 @@ impl TimeEntry {
                 ..self.clone()
             },
         }
+    }
+
+    /// Timestamp of the most recent write to any field.
+    pub(crate) fn newest_hlc(&self) -> Option<Hlc> {
+        let started = self.started_at.as_ref().map(Lww::hlc);
+        let stopped = self.stopped_at.as_ref().map(Lww::hlc);
+        let deleted = self.deleted.as_ref().map(Lww::hlc);
+        started.max(stopped).max(deleted)
     }
 
     /// Field-wise join with another copy of the same entry.
@@ -295,6 +332,37 @@ mod tests {
 
         assert!(deleted.is_deleted());
         assert!(!restored.is_deleted());
+    }
+
+    #[test]
+    fn from_registers_exposes_registers() {
+        let started = Lww::new(ms(100), at(1, A));
+        let stopped = Lww::new(None, at(2, A));
+        let deleted = Lww::new(false, at(3, B));
+
+        let entry = TimeEntry::from_registers(
+            ID,
+            TASK,
+            Some(started.clone()),
+            Some(stopped.clone()),
+            Some(deleted.clone()),
+        );
+
+        assert_eq!(entry.task_id(), TASK);
+        assert_eq!(entry.started_at_register(), Some(&started));
+        assert_eq!(entry.stopped_at_register(), Some(&stopped));
+        assert_eq!(entry.deleted_register(), Some(&deleted));
+        assert!(entry.is_running());
+    }
+
+    #[test]
+    fn newest_hlc_is_latest_write_to_any_field() {
+        let entry = running_since(100)
+            .apply(&TimeEntryChange::Deleted(false), at(9, B))
+            .apply(&TimeEntryChange::StartedAt(ms(50)), at(5, A));
+
+        assert_eq!(TimeEntry::empty(ID, TASK).newest_hlc(), None);
+        assert_eq!(entry.newest_hlc(), Some(at(9, B)));
     }
 
     fn change() -> impl Strategy<Value = TimeEntryChange> {

@@ -11,9 +11,9 @@ use trackdo_core::env::{Clock, IdGen};
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{Op, OpId, OpTarget, Seq};
-use trackdo_core::replica::{CommandError, Replica};
+use trackdo_core::replica::{CommandError, Replica, Snapshot};
 use trackdo_core::task::{Task, TaskId};
-use trackdo_core::time_entry::TimeEntryId;
+use trackdo_core::time_entry::{TimeEntry, TimeEntryId};
 
 const REPLICAS: usize = 3;
 
@@ -73,9 +73,14 @@ impl Server {
         ops.iter().map(|op| op.op_id).collect()
     }
 
-    fn snapshot(&self) -> (Vec<Task>, Option<Seq>) {
+    fn snapshot(&self) -> Snapshot {
+        let (tasks, time_entries) = replay_log(self);
         let seq = (!self.log.is_empty()).then_some(Seq(self.log.len() as u64));
-        (replay_log(self), seq)
+        Snapshot {
+            tasks,
+            time_entries,
+            seq,
+        }
     }
 
     fn events_after(&self, last: Option<Seq>) -> impl Iterator<Item = (Seq, &Op)> {
@@ -132,9 +137,11 @@ impl Node {
     }
 
     fn resync(&mut self, server: &Server) {
-        let (tasks, seq) = server.snapshot();
-        self.replica.apply_snapshot(&tasks, seq).unwrap();
-        for hlc in tasks.iter().flat_map(register_hlcs) {
+        let snapshot = server.snapshot();
+        self.replica.apply_snapshot(&snapshot).unwrap();
+        let task_hlcs = snapshot.tasks.iter().flat_map(task_hlcs);
+        let entry_hlcs = snapshot.time_entries.iter().flat_map(entry_hlcs);
+        for hlc in task_hlcs.chain(entry_hlcs) {
             self.observe(hlc);
         }
     }
@@ -295,7 +302,7 @@ fn target(action: &Action) -> usize {
     }
 }
 
-fn register_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
+fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
     [
         task.title_register().map(Lww::hlc),
         task.status_register().map(Lww::hlc),
@@ -305,25 +312,44 @@ fn register_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
     .flatten()
 }
 
+fn entry_hlcs(entry: &TimeEntry) -> impl Iterator<Item = Hlc> {
+    [
+        entry.started_at_register().map(Lww::hlc),
+        entry.stopped_at_register().map(Lww::hlc),
+        entry.deleted_register().map(Lww::hlc),
+    ]
+    .into_iter()
+    .flatten()
+}
+
 /// State obtained by applying the server log, in order, to nothing.
-fn replay_log(server: &Server) -> Vec<Task> {
-    server
-        .log
-        .iter()
-        .fold(BTreeMap::new(), |mut tasks, op| {
-            match &op.target {
-                OpTarget::Task { task_id, change } => {
-                    let task = tasks
-                        .remove(task_id)
-                        .unwrap_or_else(|| Task::empty(*task_id));
-                    tasks.insert(*task_id, task.apply(change, op.hlc));
-                }
-                OpTarget::TimeEntry { .. } => {}
+fn replay_log(server: &Server) -> (Vec<Task>, Vec<TimeEntry>) {
+    let mut tasks = BTreeMap::new();
+    let mut entries = BTreeMap::new();
+    for op in &server.log {
+        match &op.target {
+            OpTarget::Task { task_id, change } => {
+                let task = tasks
+                    .remove(task_id)
+                    .unwrap_or_else(|| Task::empty(*task_id));
+                tasks.insert(*task_id, task.apply(change, op.hlc));
             }
-            tasks
-        })
-        .into_values()
-        .collect()
+            OpTarget::TimeEntry {
+                entry_id,
+                task_id,
+                change,
+            } => {
+                let entry = entries
+                    .remove(entry_id)
+                    .unwrap_or_else(|| TimeEntry::empty(*entry_id, *task_id));
+                entries.insert(*entry_id, entry.apply(change, op.hlc));
+            }
+        }
+    }
+    (
+        tasks.into_values().collect(),
+        entries.into_values().collect(),
+    )
 }
 
 proptest! {
@@ -354,7 +380,7 @@ proptest! {
             node.pull(&server, usize::MAX);
         }
 
-        let expected = replay_log(&server);
+        let (expected, _) = replay_log(&server);
         for node in &nodes {
             prop_assert!(node.replica.pending_ops().is_empty());
             prop_assert_eq!(node.snapshot(), expected.clone());
