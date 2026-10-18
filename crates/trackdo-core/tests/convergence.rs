@@ -1,8 +1,10 @@
 //! Replicas exchanging operations through a simulated server must converge,
 //! regardless of how local edits, sends, deliveries and replays interleave.
+//! At every step at most one timer is shown running, and never one on a
+//! deleted task.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 
 use proptest::prelude::*;
@@ -13,9 +15,11 @@ use trackdo_core::lww::Lww;
 use trackdo_core::op::{Op, OpId, OpTarget, Seq};
 use trackdo_core::replica::{CommandError, Replica, Snapshot};
 use trackdo_core::task::{Task, TaskId};
-use trackdo_core::time_entry::{TimeEntry, TimeEntryId};
+use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
 const REPLICAS: usize = 3;
+/// Rounds of sending and receiving after which healing must have settled.
+const QUIESCE_ROUNDS: usize = 4;
 
 #[derive(Clone)]
 struct SimClock(Rc<Cell<u64>>);
@@ -138,17 +142,25 @@ impl Node {
 
     fn resync(&mut self, server: &Server) {
         let snapshot = server.snapshot();
-        self.replica.apply_snapshot(&snapshot).unwrap();
         let task_hlcs = snapshot.tasks.iter().flat_map(task_hlcs);
         let entry_hlcs = snapshot.time_entries.iter().flat_map(entry_hlcs);
-        for hlc in task_hlcs.chain(entry_hlcs) {
-            self.observe(hlc);
-        }
+        let observed: Vec<Hlc> = task_hlcs.chain(entry_hlcs).collect();
+        self.emitting(
+            |replica| replica.apply_snapshot(&snapshot).unwrap(),
+            observed,
+        );
     }
 
     fn pick_task(&self, index: usize) -> Option<TaskId> {
-        let ids: Vec<_> = self.replica.tasks().map(Task::id).collect();
-        (!ids.is_empty()).then(|| ids[index % ids.len()])
+        pick(self.replica.tasks().map(Task::id), index)
+    }
+
+    fn pick_entry(&self, index: usize) -> Option<TimeEntryId> {
+        pick(self.replica.time_entries().map(TimeEntry::id), index)
+    }
+
+    fn ago(&self, millis: u64) -> Timestamp {
+        Timestamp(self.clock.get() - millis)
     }
 
     fn pull(&mut self, server: &Server, max: usize) {
@@ -173,17 +185,104 @@ impl Node {
 
     fn deliver(&mut self, events: Vec<(Seq, Op)>) {
         for (seq, op) in events {
-            self.replica.apply_remote(&op, seq).unwrap();
-            self.observe(op.hlc);
+            self.emitting(|replica| replica.apply_remote(&op, seq).unwrap(), [op.hlc]);
         }
+    }
+
+    /// Runs `step`, which may emit ops (commands, or healing after receiving
+    /// `received`). Emitted ops must be newer than everything the node has
+    /// seen, so a write made after observing another always wins over it.
+    fn emitting<T>(
+        &mut self,
+        step: impl FnOnce(&mut Replica<SimClock, DeviceIds>) -> T,
+        received: impl IntoIterator<Item = Hlc>,
+    ) -> T {
+        let before: HashSet<OpId> = self
+            .replica
+            .pending_ops()
+            .iter()
+            .map(|op| op.op_id)
+            .collect();
+        let result = step(&mut self.replica);
+        for hlc in received {
+            self.observe(hlc);
+        }
+        let emitted: Vec<Hlc> = self
+            .replica
+            .pending_ops()
+            .iter()
+            .filter(|op| !before.contains(&op.op_id))
+            .map(|op| op.hlc)
+            .collect();
+        for hlc in emitted {
+            assert!(
+                Some(hlc) > self.max_seen,
+                "emitted {hlc:?} is not newer than observed {:?}",
+                self.max_seen
+            );
+            self.observe(hlc);
+        }
+        result
     }
 
     fn observe(&mut self, hlc: Hlc) {
         self.max_seen = self.max_seen.max(Some(hlc));
     }
 
-    fn snapshot(&self) -> Vec<Task> {
-        self.replica.tasks().cloned().collect()
+    fn snapshot(&self) -> (Vec<Task>, Vec<TimeEntry>) {
+        (
+            self.replica.tasks().cloned().collect(),
+            self.replica.time_entries().cloned().collect(),
+        )
+    }
+
+    /// Every task with an entry, including tasks not received yet.
+    fn tracked_tasks(&self) -> BTreeSet<TaskId> {
+        self.replica
+            .time_entries()
+            .map(TimeEntry::task_id)
+            .collect()
+    }
+
+    /// What the user sees: at most one running timer, never on a deleted task.
+    fn check_shown_timers(&self) {
+        let running: Vec<_> = self
+            .tracked_tasks()
+            .into_iter()
+            .flat_map(|task| self.replica.entries_for(task))
+            .filter(|view| view.is_running())
+            .collect();
+        assert!(
+            running.len() <= 1,
+            "several timers shown running: {running:?}"
+        );
+        for view in running {
+            let task = self.replica.task(view.task_id());
+            assert!(
+                !task.is_some_and(Task::is_deleted),
+                "timer shown on deleted task"
+            );
+        }
+    }
+
+    /// What is stored once healing settled: the same as what is shown.
+    fn check_stored_timers(&self) {
+        let running: Vec<_> = self
+            .replica
+            .time_entries()
+            .filter(|entry| entry.is_running() && !entry.is_deleted())
+            .collect();
+        assert!(
+            running.len() <= 1,
+            "several timers stored running: {running:?}"
+        );
+        for entry in running {
+            let task = self.replica.task(entry.task_id());
+            assert!(
+                !task.is_some_and(Task::is_deleted),
+                "timer stored on deleted task"
+            );
+        }
     }
 }
 
@@ -194,6 +293,13 @@ enum Edit {
     Complete(usize),
     Reopen(usize),
     Delete(usize),
+    Start(usize),
+    Stop(usize),
+    /// Start and optional stop, as milliseconds before now.
+    SetTimes(usize, u64, Option<u64>),
+    DeleteEntry(usize),
+    /// Two instants before now; the earlier one becomes the start.
+    AddEntry(usize, u64, u64),
 }
 
 #[derive(Debug, Clone)]
@@ -213,12 +319,20 @@ fn title() -> impl Strategy<Value = String> {
 }
 
 fn edit() -> impl Strategy<Value = Edit> {
+    let i = any::<usize>;
+    let ago = || 0u64..3_000;
     prop_oneof![
-        title().prop_map(Edit::Create),
-        (any::<usize>(), title()).prop_map(|(i, t)| Edit::Rename(i, t)),
-        any::<usize>().prop_map(Edit::Complete),
-        any::<usize>().prop_map(Edit::Reopen),
-        any::<usize>().prop_map(Edit::Delete),
+        1 => title().prop_map(Edit::Create),
+        1 => (i(), title()).prop_map(|(i, t)| Edit::Rename(i, t)),
+        1 => i().prop_map(Edit::Complete),
+        1 => i().prop_map(Edit::Reopen),
+        1 => i().prop_map(Edit::Delete),
+        3 => i().prop_map(Edit::Start),
+        1 => i().prop_map(Edit::Stop),
+        1 => (i(), ago(), prop::option::of(ago()))
+            .prop_map(|(i, start, stop)| Edit::SetTimes(i, start, stop)),
+        1 => i().prop_map(Edit::DeleteEntry),
+        1 => (i(), ago(), ago()).prop_map(|(i, a, b)| Edit::AddEntry(i, a, b)),
     ]
 }
 
@@ -235,42 +349,76 @@ fn action() -> impl Strategy<Value = Action> {
     ]
 }
 
-/// Ops emitted by an edit must be newer than everything the node has seen,
-/// so an edit made after observing a remote write always wins over it.
 fn run_edit(node: &mut Node, edit: &Edit) {
-    let before = node.replica.pending_ops().len();
+    let task = node.pick_task(edit_index(edit));
+    let entry = node.pick_entry(edit_index(edit));
     let result = match edit {
-        Edit::Create(title) => node.replica.create(title).map(|_| ()),
-        Edit::Rename(i, title) => match node.pick_task(*i) {
-            Some(id) => node.replica.rename(id, title),
-            None => Ok(()),
-        },
-        Edit::Complete(i) => node
-            .pick_task(*i)
-            .map_or(Ok(()), |id| node.replica.complete(id)),
-        Edit::Reopen(i) => node
-            .pick_task(*i)
-            .map_or(Ok(()), |id| node.replica.reopen(id)),
-        Edit::Delete(i) => node
-            .pick_task(*i)
-            .map_or(Ok(()), |id| node.replica.delete(id)),
+        Edit::Create(title) => node.emitting(|r| r.create(title).map(drop), []),
+        Edit::Rename(_, title) => on(node, task, |r, id| r.rename(id, title)),
+        Edit::Complete(_) => on(node, task, Replica::complete),
+        Edit::Reopen(_) => on(node, task, Replica::reopen),
+        Edit::Delete(_) => on(node, task, Replica::delete),
+        Edit::Start(_) => on(node, task, |r, id| r.start(id).map(drop)),
+        Edit::Stop(_) => on(node, entry, Replica::stop),
+        Edit::SetTimes(_, start, stop) => {
+            let (start, stop) = (node.ago(*start), stop.map(|stop| node.ago(stop)));
+            on(node, entry, |r, id| r.edit_times(id, start, stop))
+        }
+        Edit::DeleteEntry(_) => on(node, entry, Replica::delete_entry),
+        Edit::AddEntry(_, a, b) => {
+            let (start, stop) = (node.ago(*a.max(b)), node.ago(*a.min(b)));
+            on(node, task, |r, id| r.add_entry(id, start, stop).map(drop))
+        }
     };
     match result {
-        Ok(()) | Err(CommandError::Deleted(_)) => {}
+        Ok(())
+        | Err(
+            CommandError::Deleted(_)
+            | CommandError::EntryDeleted(_)
+            | CommandError::NotRunning(_)
+            | CommandError::StopBeforeStart { .. },
+        ) => {}
+        // An entry may arrive before its task does.
+        Err(CommandError::NotFound(_))
+            if matches!(
+                edit,
+                Edit::Stop(_) | Edit::SetTimes(..) | Edit::DeleteEntry(_)
+            ) => {}
         Err(other) => panic!("unexpected command error: {other}"),
     }
-    let emitted: Vec<Hlc> = node.replica.pending_ops()[before..]
-        .iter()
-        .map(|op| op.hlc)
-        .collect();
-    for hlc in emitted {
-        assert!(
-            Some(hlc) > node.max_seen,
-            "emitted {hlc:?} is not newer than observed {:?}",
-            node.max_seen
-        );
-        node.observe(hlc);
+}
+
+fn edit_index(edit: &Edit) -> usize {
+    match edit {
+        Edit::Create(_) => 0,
+        Edit::Rename(i, _)
+        | Edit::Complete(i)
+        | Edit::Reopen(i)
+        | Edit::Delete(i)
+        | Edit::Start(i)
+        | Edit::Stop(i)
+        | Edit::SetTimes(i, ..)
+        | Edit::DeleteEntry(i)
+        | Edit::AddEntry(i, ..) => *i,
     }
+}
+
+/// Runs `command` on `id`, or does nothing when there was nothing to pick.
+fn on<I>(
+    node: &mut Node,
+    id: Option<I>,
+    command: impl FnOnce(&mut Replica<SimClock, DeviceIds>, I) -> Result<(), CommandError>,
+) -> Result<(), CommandError> {
+    match id {
+        Some(id) => node.emitting(|replica| command(replica, id), []),
+        None => Ok(()),
+    }
+}
+
+fn pick<T>(ids: impl Iterator<Item = T>, index: usize) -> Option<T> {
+    let ids: Vec<T> = ids.collect();
+    let len = ids.len();
+    ids.into_iter().nth(index % len.max(1))
 }
 
 fn run(node: &mut Node, server: &mut Server, action: &Action) {
@@ -368,22 +516,28 @@ proptest! {
         let mut server = Server::default();
 
         for action in &actions {
-            run(&mut nodes[target(action)], &mut server, action);
+            let node = &mut nodes[target(action)];
+            run(node, &mut server, action);
+            node.check_shown_timers();
         }
 
-        // Quiesce: everyone sends what is pending, then catches up.
-        for node in &mut nodes {
-            let acked = server.push(node.replica.pending_ops());
-            node.replica.acknowledge(&acked);
-        }
-        for node in &mut nodes {
-            node.pull(&server, usize::MAX);
+        // Quiesce: everyone sends what is pending, then catches up. Catching
+        // up may heal timers, whose stops are sent in the next round.
+        for _ in 0..QUIESCE_ROUNDS {
+            for node in &mut nodes {
+                let acked = server.push(node.replica.pending_ops());
+                node.replica.acknowledge(&acked);
+            }
+            for node in &mut nodes {
+                node.pull(&server, usize::MAX);
+            }
         }
 
-        let (expected, _) = replay_log(&server);
+        let expected = replay_log(&server);
         for node in &nodes {
             prop_assert!(node.replica.pending_ops().is_empty());
             prop_assert_eq!(node.snapshot(), expected.clone());
+            node.check_stored_timers();
         }
     }
 }
