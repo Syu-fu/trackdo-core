@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   started last wins and the others are shown as stopped when it started; a
   timer running on a deleted task is shown as stopped when the task was
   deleted.
+- Replicas write such derived stops back as operations after applying remote
+  operations or snapshots, so stored state catches up with what is shown.
 - Time entry operations on the wire:
   `"target": { "type": "time_entry", "entry_id", "task_id", "change" }`.
 

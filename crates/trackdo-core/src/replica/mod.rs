@@ -4,6 +4,7 @@
 //! Commands validate user intent, emit operations and apply them locally at
 //! once, so the UI never waits on the network.
 
+mod healing;
 mod task_commands;
 #[cfg(test)]
 mod test_support;
@@ -150,6 +151,11 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     /// Operations at or before [`Self::last_seq`] are ignored. Receiving one
     /// of this replica's own operations acknowledges it, removing it from
     /// [`Self::pending_ops`].
+    ///
+    /// If the operation leaves timers that must be treated as stopped, stop
+    /// operations for them are queued. Should that fail on the clock, the
+    /// received operation is still applied and the stops are retried on the
+    /// next call.
     pub fn apply_remote(&mut self, op: &Op, seq: Seq) -> Result<(), RemoteError> {
         if self.last_seq.is_some_and(|last| seq <= last) {
             return Ok(());
@@ -161,7 +167,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.pending.retain(|pending| pending.op_id != op.op_id);
         self.hlc = hlc;
         self.last_seq = Some(seq);
-        Ok(())
+        Ok(self.heal()?)
     }
 
     /// Confirms operations the server reported as stored, typically from the
@@ -175,6 +181,8 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     /// after the event log no longer reaches back to [`Self::last_seq`].
     ///
     /// Pending operations are kept: they are re-sent and acknowledged as usual.
+    /// Timers left to be treated as stopped are healed as in
+    /// [`Self::apply_remote`].
     pub fn apply_snapshot(&mut self, tasks: &[Task], seq: Option<Seq>) -> Result<(), RemoteError> {
         let newest = tasks.iter().filter_map(Task::newest_hlc).max();
         let hlc = match newest {
@@ -188,7 +196,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         }
         self.hlc = hlc;
         self.last_seq = self.last_seq.max(seq);
-        Ok(())
+        Ok(self.heal()?)
     }
 
     /// Writes may target a task this replica has not seen yet.
@@ -259,7 +267,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
 
     /// Stamps `targets`, applies them locally and queues them for sending.
     /// All timestamps are computed first so a clock failure changes nothing.
-    fn emit(&mut self, targets: Vec<OpTarget>) -> Result<(), CommandError> {
+    fn emit<E: From<HlcError>>(&mut self, targets: Vec<OpTarget>) -> Result<(), E> {
         let now = self.clock.now_millis();
         let mut hlc = self.hlc;
         let mut stamped = Vec::with_capacity(targets.len());

@@ -28,7 +28,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
                 task_id,
                 change: TaskChange::Status(TaskStatus::Todo),
             });
-        self.emit(stops.into_iter().chain(starts).chain(reopen).collect())?;
+        self.emit::<CommandError>(stops.into_iter().chain(starts).chain(reopen).collect())?;
         Ok(id)
     }
 
@@ -91,7 +91,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             TimeEntryChange::StoppedAt(Some(stopped_at)),
         ]
         .map(|change| entry_target(id, task_id, change));
-        self.emit(targets.into())?;
+        self.emit::<CommandError>(targets.into())?;
         Ok(id)
     }
 
@@ -147,7 +147,11 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     }
 }
 
-const fn entry_target(entry_id: TimeEntryId, task_id: TaskId, change: TimeEntryChange) -> OpTarget {
+pub(super) const fn entry_target(
+    entry_id: TimeEntryId,
+    task_id: TaskId,
+    change: TimeEntryChange,
+) -> OpTarget {
     OpTarget::TimeEntry {
         entry_id,
         task_id,

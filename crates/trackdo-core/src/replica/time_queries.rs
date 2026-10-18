@@ -135,9 +135,7 @@ mod tests {
         assert!(!replica.is_in_progress(local_task));
         let view = replica.entries_for(local_task)[0];
         assert_eq!(view.id(), local);
-        assert_eq!(view.entry().stopped_at(), None);
         assert_eq!(view.stopped_at(), Some(ms(NOW + 10)));
-        assert!(view.is_stop_derived());
     }
 
     #[test]
