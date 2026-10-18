@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "trackdo-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "trackdo-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "insta",
  "proptest",
