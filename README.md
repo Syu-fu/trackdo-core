@@ -143,6 +143,17 @@ cargo llvm-cov --workspace                   # coverage (CI requires >= 80%)
 Wire-format changes show up as [insta](https://insta.rs) snapshot diffs.
 Incompatible changes must bump `PROTOCOL_VERSION`.
 
+### Releasing
+
+1. Move the `Unreleased` entries in [`CHANGELOG.md`](CHANGELOG.md) under a new
+   `## [x.y.z] - date` heading and set the workspace `version` to match.
+2. Commit, then tag and push: `git tag -s vx.y.z -m vx.y.z && git push origin main vx.y.z`.
+
+Pushing the tag runs the checks again and publishes a GitHub Release with the
+changelog section as its notes. Tags with a suffix such as `-rc.1` become
+pre-releases. The crates are not published to crates.io; depend on them with
+`git = "https://github.com/Syu-fu/trackdo-core", tag = "vx.y.z"`.
+
 ## License
 
 [MIT](LICENSE)
