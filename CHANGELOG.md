@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `Task::from_registers` takes a `TaskRegisters`, and
+  `Task::registers` replaces the `*_register` accessors, so adding a task
+  field no longer changes every caller.
+
 ## [0.3.1] - 2026-10-18
 
 ### Added

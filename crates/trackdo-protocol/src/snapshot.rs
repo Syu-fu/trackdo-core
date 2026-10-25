@@ -6,7 +6,7 @@ use uuid::Uuid;
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Seq};
 use trackdo_core::replica::Snapshot;
-use trackdo_core::task::{Task, TaskId, TaskStatus};
+use trackdo_core::task::{Task, TaskId, TaskRegisters, TaskStatus};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
 use crate::error::{ProtocolError, decode_title};
@@ -86,16 +86,20 @@ impl TryFrom<SnapshotDto> for Snapshot {
 
 impl From<&Task> for TaskDto {
     fn from(task: &Task) -> Self {
+        let registers = task.registers();
         Self {
             id: Uuid::from_u128(task.id().0),
-            title: task
-                .title_register()
+            title: registers
+                .title
+                .as_ref()
                 .map(|reg| encode(reg, |title| title.as_str().to_owned())),
-            status: task
-                .status_register()
+            status: registers
+                .status
+                .as_ref()
                 .map(|reg| encode(reg, |status| TaskStatusDto::from(*status))),
-            deleted: task
-                .deleted_register()
+            deleted: registers
+                .deleted
+                .as_ref()
                 .map(|reg| encode(reg, |deleted| *deleted)),
         }
     }
@@ -109,13 +113,13 @@ impl TryFrom<TaskDto> for Task {
             .title
             .map(|reg| Ok::<_, ProtocolError>(Lww::new(decode_title(&reg.value)?, reg.hlc.into())))
             .transpose()?;
-        let status = dto.status.map(|reg| decode(reg, TaskStatus::from));
-        let deleted = dto.deleted.map(|reg| decode(reg, |deleted| deleted));
         Ok(Self::from_registers(
             TaskId(dto.id.as_u128()),
-            title,
-            status,
-            deleted,
+            TaskRegisters {
+                title,
+                status: dto.status.map(|reg| decode(reg, TaskStatus::from)),
+                deleted: dto.deleted.map(|reg| decode(reg, |deleted| deleted)),
+            },
         ))
     }
 }

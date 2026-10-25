@@ -501,9 +501,9 @@ fn target(action: &Action) -> usize {
 
 fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
     [
-        task.title_register().map(Lww::hlc),
-        task.status_register().map(Lww::hlc),
-        task.deleted_register().map(Lww::hlc),
+        task.registers().title.as_ref().map(Lww::hlc),
+        task.registers().status.as_ref().map(Lww::hlc),
+        task.registers().deleted.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()

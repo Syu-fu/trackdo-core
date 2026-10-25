@@ -110,7 +110,7 @@ pub(crate) fn derived_stops(
 /// When the task was deleted, by the wall time of its deletion.
 fn deleted_at(tasks: &BTreeMap<TaskId, Task>, task_id: TaskId) -> Option<Timestamp> {
     let task = tasks.get(&task_id).filter(|task| task.is_deleted())?;
-    let register = task.deleted_register()?;
+    let register = task.registers().deleted.as_ref()?;
     Some(Timestamp(register.hlc().wall_ms()))
 }
 

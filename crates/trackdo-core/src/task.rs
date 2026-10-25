@@ -21,14 +21,20 @@ pub enum TaskChange {
     Deleted(bool),
 }
 
-/// Each field is `None` until its first write arrives, because there is no
-/// dedicated create operation and writes may arrive in any order.
+/// The register of every task field. Each is `None` until its first write
+/// arrives, because there is no dedicated create operation and writes may
+/// arrive in any order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskRegisters {
+    pub title: Option<Lww<Title>>,
+    pub status: Option<Lww<TaskStatus>>,
+    pub deleted: Option<Lww<bool>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     id: TaskId,
-    title: Option<Lww<Title>>,
-    status: Option<Lww<TaskStatus>>,
-    deleted: Option<Lww<bool>>,
+    registers: TaskRegisters,
 }
 
 impl Task {
@@ -36,91 +42,84 @@ impl Task {
     pub const fn empty(id: TaskId) -> Self {
         Self {
             id,
-            title: None,
-            status: None,
-            deleted: None,
+            registers: TaskRegisters {
+                title: None,
+                status: None,
+                deleted: None,
+            },
         }
     }
 
     /// Rebuilds a task from previously exported registers.
-    pub const fn from_registers(
-        id: TaskId,
-        title: Option<Lww<Title>>,
-        status: Option<Lww<TaskStatus>>,
-        deleted: Option<Lww<bool>>,
-    ) -> Self {
-        Self {
-            id,
-            title,
-            status,
-            deleted,
-        }
+    pub const fn from_registers(id: TaskId, registers: TaskRegisters) -> Self {
+        Self { id, registers }
     }
 
     pub const fn id(&self) -> TaskId {
         self.id
     }
 
-    pub const fn title_register(&self) -> Option<&Lww<Title>> {
-        self.title.as_ref()
-    }
-
-    pub const fn status_register(&self) -> Option<&Lww<TaskStatus>> {
-        self.status.as_ref()
-    }
-
-    pub const fn deleted_register(&self) -> Option<&Lww<bool>> {
-        self.deleted.as_ref()
+    pub const fn registers(&self) -> &TaskRegisters {
+        &self.registers
     }
 
     /// `None` until a title write has been received.
     pub fn title(&self) -> Option<&Title> {
-        self.title.as_ref().map(Lww::value)
+        self.registers.title.as_ref().map(Lww::value)
     }
 
     pub fn status(&self) -> TaskStatus {
-        self.status
+        self.registers
+            .status
             .as_ref()
             .map_or(TaskStatus::Todo, |status| *status.value())
     }
 
     /// Deletion is a tombstone: edits to other fields never clear it.
     pub fn is_deleted(&self) -> bool {
-        self.deleted
+        self.registers
+            .deleted
             .as_ref()
             .is_some_and(|deleted| *deleted.value())
     }
 
     /// Task after applying `change` written at `hlc`. Stale writes are ignored.
     pub fn apply(&self, change: &TaskChange, hlc: Hlc) -> Self {
-        match change {
-            TaskChange::Title(title) => Self {
-                title: Some(write(&self.title, title.clone(), hlc)),
-                ..self.clone()
+        let current = &self.registers;
+        let registers = match change {
+            TaskChange::Title(title) => TaskRegisters {
+                title: Some(write(&current.title, title.clone(), hlc)),
+                ..current.clone()
             },
-            TaskChange::Status(status) => Self {
-                status: Some(write(&self.status, *status, hlc)),
-                ..self.clone()
+            TaskChange::Status(status) => TaskRegisters {
+                status: Some(write(&current.status, *status, hlc)),
+                ..current.clone()
             },
-            TaskChange::Deleted(deleted) => Self {
-                deleted: Some(write(&self.deleted, *deleted, hlc)),
-                ..self.clone()
+            TaskChange::Deleted(deleted) => TaskRegisters {
+                deleted: Some(write(&current.deleted, *deleted, hlc)),
+                ..current.clone()
             },
+        };
+        Self {
+            id: self.id,
+            registers,
         }
     }
 
     /// The write each field holds, as it would be sent again.
     pub(crate) fn writes(&self) -> impl Iterator<Item = (TaskChange, Hlc)> {
-        let title = self
-            .title
+        let TaskRegisters {
+            title,
+            status,
+            deleted,
+        } = &self.registers;
+        let title = title
             .as_ref()
             .map(|title| (TaskChange::Title(title.value().clone()), title.hlc()));
-        let status = self
-            .status
+        let status = status
             .as_ref()
             .map(|status| (TaskChange::Status(*status.value()), status.hlc()));
-        let deleted = self
-            .deleted
+        let deleted = deleted
             .as_ref()
             .map(|deleted| (TaskChange::Deleted(*deleted.value()), deleted.hlc()));
         [title, status, deleted].into_iter().flatten()
@@ -128,9 +127,14 @@ impl Task {
 
     /// Timestamp of the most recent write to any field.
     pub(crate) fn newest_hlc(&self) -> Option<Hlc> {
-        let title = self.title.as_ref().map(Lww::hlc);
-        let status = self.status.as_ref().map(Lww::hlc);
-        let deleted = self.deleted.as_ref().map(Lww::hlc);
+        let TaskRegisters {
+            title,
+            status,
+            deleted,
+        } = &self.registers;
+        let title = title.as_ref().map(Lww::hlc);
+        let status = status.as_ref().map(Lww::hlc);
+        let deleted = deleted.as_ref().map(Lww::hlc);
         title.max(status).max(deleted)
     }
 
@@ -138,11 +142,14 @@ impl Task {
     /// snapshot. Equivalent to applying every write either side has seen.
     pub(crate) fn merge(&self, other: &Self) -> Self {
         debug_assert_eq!(self.id, other.id, "merging different tasks");
+        let (a, b) = (&self.registers, &other.registers);
         Self {
             id: self.id,
-            title: join(&self.title, &other.title),
-            status: join(&self.status, &other.status),
-            deleted: join(&self.deleted, &other.deleted),
+            registers: TaskRegisters {
+                title: join(&a.title, &b.title),
+                status: join(&a.status, &b.status),
+                deleted: join(&a.deleted, &b.deleted),
+            },
         }
     }
 }
@@ -263,16 +270,15 @@ mod tests {
         let status_reg = Lww::new(TaskStatus::Done, at(2, A));
         let deleted_reg = Lww::new(true, at(3, B));
 
-        let task = Task::from_registers(
-            ID,
-            Some(title_reg.clone()),
-            Some(status_reg.clone()),
-            Some(deleted_reg.clone()),
-        );
+        let registers = TaskRegisters {
+            title: Some(title_reg),
+            status: Some(status_reg),
+            deleted: Some(deleted_reg),
+        };
 
-        assert_eq!(task.title_register(), Some(&title_reg));
-        assert_eq!(task.status_register(), Some(&status_reg));
-        assert_eq!(task.deleted_register(), Some(&deleted_reg));
+        let task = Task::from_registers(ID, registers.clone());
+
+        assert_eq!(task.registers(), &registers);
     }
 
     #[test]
@@ -288,7 +294,7 @@ mod tests {
 
         assert_eq!(merged.title(), Some(&title("local")));
         assert_eq!(merged.status(), TaskStatus::Done);
-        assert_eq!(merged.deleted_register(), None);
+        assert_eq!(merged.registers().deleted, None);
     }
 
     #[test]
