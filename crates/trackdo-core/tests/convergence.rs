@@ -368,6 +368,8 @@ enum Edit {
     CreateTag(String),
     RenameTag(usize, String),
     DeleteTag(usize),
+    /// Task index, tag index, and whether to add or remove the tag.
+    TagTask(usize, usize, bool),
 }
 
 #[derive(Debug, Clone)]
@@ -427,6 +429,7 @@ fn edit() -> impl Strategy<Value = Edit> {
         1 => tag_name().prop_map(Edit::CreateTag),
         1 => (i(), tag_name()).prop_map(|(i, name)| Edit::RenameTag(i, name)),
         1 => i().prop_map(Edit::DeleteTag),
+        2 => (i(), i(), any::<bool>()).prop_map(|(t, g, on)| Edit::TagTask(t, g, on)),
     ]
 }
 
@@ -453,6 +456,11 @@ fn run_edit(node: &mut Node, edit: &Edit) {
         Edit::CreateTag(name) => node.emitting(|r| r.create_tag(name).map(drop), []),
         Edit::RenameTag(_, name) => on(node, tag, |r, id| r.rename_tag(id, name)),
         Edit::DeleteTag(_) => on(node, tag, Replica::delete_tag),
+        Edit::TagTask(_, g, tagged) => match node.pick_tag(*g) {
+            Some(tag) if *tagged => on(node, task, |r, id| r.tag_task(id, tag)),
+            Some(tag) => on(node, task, |r, id| r.untag_task(id, tag)),
+            None => Ok(()),
+        },
         Edit::Rename(_, title) => on(node, task, |r, id| r.rename(id, title)),
         Edit::Complete(_) => on(node, task, Replica::complete),
         Edit::Reopen(_) => on(node, task, Replica::reopen),
@@ -523,7 +531,8 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::DeleteEntry(i)
         | Edit::AddEntry(i, ..)
         | Edit::RenameTag(i, _)
-        | Edit::DeleteTag(i) => *i,
+        | Edit::DeleteTag(i)
+        | Edit::TagTask(i, ..) => *i,
     }
 }
 
@@ -576,7 +585,8 @@ fn target(action: &Action) -> usize {
     }
 }
 
-fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
+fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> + '_ {
+    let tags = task.registers().tags.values().map(Lww::hlc);
     [
         task.registers().title.as_ref().map(Lww::hlc),
         task.registers().status.as_ref().map(Lww::hlc),
@@ -589,6 +599,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
     ]
     .into_iter()
     .flatten()
+    .chain(tags)
 }
 
 fn entry_hlcs(entry: &TimeEntry) -> impl Iterator<Item = Hlc> {

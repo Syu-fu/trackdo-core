@@ -1,9 +1,12 @@
 //! Task aggregate built from independent last-writer-wins fields.
 
+use std::collections::BTreeMap;
+
 use crate::date::Date;
 use crate::hlc::Hlc;
 use crate::lww::{Lww, join, write};
 use crate::note::Note;
+use crate::tag::TagId;
 use crate::time_entry::Timestamp;
 use crate::title::Title;
 
@@ -39,6 +42,11 @@ pub enum TaskChange {
     ScheduledAt(Option<Timestamp>),
     /// `None` moves the task to the top level.
     Parent(Option<TaskId>),
+    /// Adds or removes one tag, leaving the others as they are.
+    Tag {
+        tag: TagId,
+        tagged: bool,
+    },
 }
 
 /// The register of every task field. Each is `None` until its first write
@@ -54,6 +62,8 @@ pub struct TaskRegisters {
     pub due: Option<Lww<Option<Date>>>,
     pub scheduled_at: Option<Lww<Option<Timestamp>>>,
     pub parent: Option<Lww<Option<TaskId>>>,
+    /// Whether each tag ever written is on the task.
+    pub tags: BTreeMap<TagId, Lww<bool>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +86,7 @@ impl Task {
                 due: None,
                 scheduled_at: None,
                 parent: None,
+                tags: BTreeMap::new(),
             },
         }
     }
@@ -141,6 +152,16 @@ impl Task {
             .and_then(|parent| *parent.value())
     }
 
+    /// Ids of the tags on the task, including tags that are deleted or not
+    /// received yet.
+    pub fn tag_ids(&self) -> impl Iterator<Item = TagId> + '_ {
+        self.registers
+            .tags
+            .iter()
+            .filter(|(_, tagged)| *tagged.value())
+            .map(|(&tag, _)| tag)
+    }
+
     /// Deletion is a tombstone: edits to other fields never clear it.
     pub fn is_deleted(&self) -> bool {
         self.registers
@@ -185,6 +206,14 @@ impl Task {
                 parent: Some(write(&current.parent, *parent, hlc)),
                 ..current.clone()
             },
+            TaskChange::Tag { tag, tagged } => {
+                let mut tags = current.tags.clone();
+                tags.insert(*tag, write(&current.tags.get(tag).cloned(), *tagged, hlc));
+                TaskRegisters {
+                    tags,
+                    ..current.clone()
+                }
+            }
         };
         Self {
             id: self.id,
@@ -203,6 +232,7 @@ impl Task {
             due,
             scheduled_at,
             parent,
+            tags,
         } = &self.registers;
         let title = title
             .as_ref()
@@ -240,41 +270,18 @@ impl Task {
         ]
         .into_iter()
         .flatten()
+        .chain(tags.iter().map(|(&tag, tagged)| {
+            let change = TaskChange::Tag {
+                tag,
+                tagged: *tagged.value(),
+            };
+            (change, tagged.hlc())
+        }))
     }
 
     /// Timestamp of the most recent write to any field.
     pub(crate) fn newest_hlc(&self) -> Option<Hlc> {
-        let TaskRegisters {
-            title,
-            status,
-            deleted,
-            priority,
-            note,
-            due,
-            scheduled_at,
-            parent,
-        } = &self.registers;
-        let title = title.as_ref().map(Lww::hlc);
-        let status = status.as_ref().map(Lww::hlc);
-        let deleted = deleted.as_ref().map(Lww::hlc);
-        let priority = priority.as_ref().map(Lww::hlc);
-        let note = note.as_ref().map(Lww::hlc);
-        let due = due.as_ref().map(Lww::hlc);
-        let scheduled_at = scheduled_at.as_ref().map(Lww::hlc);
-        let parent = parent.as_ref().map(Lww::hlc);
-        [
-            title,
-            status,
-            deleted,
-            priority,
-            note,
-            due,
-            scheduled_at,
-            parent,
-        ]
-        .into_iter()
-        .flatten()
-        .max()
+        self.writes().map(|(_, hlc)| hlc).max()
     }
 
     /// Field-wise join with another copy of the same task, as received in a
@@ -293,9 +300,23 @@ impl Task {
                 due: join(&a.due, &b.due),
                 scheduled_at: join(&a.scheduled_at, &b.scheduled_at),
                 parent: join(&a.parent, &b.parent),
+                tags: join_tags(&a.tags, &b.tags),
             },
         }
     }
+}
+
+/// Key-wise join; a tag only one side has seen is taken as is.
+fn join_tags(
+    a: &BTreeMap<TagId, Lww<bool>>,
+    b: &BTreeMap<TagId, Lww<bool>>,
+) -> BTreeMap<TagId, Lww<bool>> {
+    let mut joined = a.clone();
+    for (tag, register) in b {
+        let merged = join(&joined.get(tag).cloned(), &Some(register.clone()));
+        joined.extend(merged.map(|merged| (*tag, merged)));
+    }
+    joined
 }
 
 #[cfg(test)]
@@ -314,6 +335,10 @@ mod tests {
 
     fn date(day: u8) -> Date {
         Date::new(2026, 10, day).unwrap()
+    }
+
+    fn tagged(tag: TagId, tagged: bool) -> TaskChange {
+        TaskChange::Tag { tag, tagged }
     }
 
     fn note(s: &str) -> Note {
@@ -391,6 +416,19 @@ mod tests {
 
         let task = task.apply(&TaskChange::ScheduledAt(None), at(2, B));
         assert_eq!(task.scheduled_at(), None);
+    }
+
+    #[test]
+    fn each_tag_is_tagged_by_its_newest_write() {
+        let (work, home) = (TagId(1), TagId(2));
+        let task = Task::empty(ID)
+            .apply(&tagged(work, true), at(1, A))
+            .apply(&tagged(home, true), at(1, B))
+            .apply(&tagged(work, false), at(3, B))
+            .apply(&tagged(work, true), at(2, A));
+
+        assert_eq!(task.tag_ids().collect::<Vec<_>>(), vec![home]);
+        assert_eq!(task.registers().tags.len(), 2);
     }
 
     #[test]
@@ -478,6 +516,7 @@ mod tests {
             prop::option::of(1u8..4).prop_map(|day| TaskChange::Due(day.map(date))),
             prop::option::of(0u64..3).prop_map(|time| TaskChange::ScheduledAt(time.map(Timestamp))),
             prop::option::of(0u128..3).prop_map(|id| TaskChange::Parent(id.map(TaskId))),
+            (0u128..3, any::<bool>()).prop_map(|(tag, on)| tagged(TagId(tag), on)),
         ]
     }
 
@@ -508,6 +547,7 @@ mod tests {
             due: Some(Lww::new(Some(date(1)), at(6, A))),
             scheduled_at: Some(Lww::new(Some(Timestamp(9)), at(7, B))),
             parent: Some(Lww::new(Some(TaskId(3)), at(8, A))),
+            tags: BTreeMap::from([(TagId(1), Lww::new(true, at(9, B)))]),
         };
 
         let task = Task::from_registers(ID, registers.clone());

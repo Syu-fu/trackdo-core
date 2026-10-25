@@ -59,6 +59,11 @@ pub enum TaskChangeDto {
     ScheduledAt(Option<u64>),
     /// The parent task's id, or `null` to move the task to the top level.
     Parent(Option<Uuid>),
+    /// Adds (`tagged: true`) or removes one tag.
+    Tag {
+        tag_id: Uuid,
+        tagged: bool,
+    },
 }
 
 /// Times are milliseconds since the Unix epoch, in UTC. `stopped_at: null`
@@ -190,6 +195,10 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::Parent(parent) => {
                 Self::Parent(parent.map(|TaskId(parent)| Uuid::from_u128(parent)))
             }
+            TaskChange::Tag { tag, tagged } => Self::Tag {
+                tag_id: Uuid::from_u128(tag.0),
+                tagged: *tagged,
+            },
         }
     }
 }
@@ -211,6 +220,10 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Parent(parent) => {
                 Ok(Self::Parent(parent.map(|parent| TaskId(parent.as_u128()))))
             }
+            TaskChangeDto::Tag { tag_id, tagged } => Ok(Self::Tag {
+                tag: TagId(tag_id.as_u128()),
+                tagged,
+            }),
         }
     }
 }
@@ -392,6 +405,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn tag_task_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Tag {
+            tag: TagId(0xdc59_ba82_d0ee_5fec_b8e2_c693_5ec3_ee03),
+            tagged: true,
+        })));
+    }
+
+    #[test]
     fn top_level_op_wire_format() {
         insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Parent(None))));
     }
@@ -558,6 +579,10 @@ pub(crate) mod tests {
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
             prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
             prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
+            (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
+                tag: TagId(tag),
+                tagged
+            }),
         ];
         (
             any::<u128>(),

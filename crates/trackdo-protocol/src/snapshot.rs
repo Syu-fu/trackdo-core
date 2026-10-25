@@ -1,12 +1,14 @@
 //! Wire representation of a full state snapshot (`GET /snapshot`).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Seq};
 use trackdo_core::replica::Snapshot;
-use trackdo_core::tag::Tag;
+use trackdo_core::tag::{Tag, TagId};
 use trackdo_core::task::{Task, TaskId, TaskPriority, TaskRegisters, TaskStatus};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
@@ -49,6 +51,17 @@ pub struct TaskDto {
     /// A `null` value means the task was moved to the top level.
     #[serde(default)]
     pub parent: Option<RegisterDto<Option<Uuid>>>,
+    /// One register per tag ever written to the task, ordered by tag id.
+    #[serde(default)]
+    pub tags: Vec<TaskTagDto>,
+}
+
+/// Whether one tag is on a task, as of `hlc`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskTagDto {
+    pub tag_id: Uuid,
+    pub tagged: bool,
+    pub hlc: HlcDto,
 }
 
 /// A time entry with every field's register. Times are Unix milliseconds.
@@ -149,6 +162,15 @@ impl From<&Task> for TaskDto {
                     parent.map(|TaskId(parent)| Uuid::from_u128(parent))
                 })
             }),
+            tags: registers
+                .tags
+                .iter()
+                .map(|(TagId(tag), tagged)| TaskTagDto {
+                    tag_id: Uuid::from_u128(*tag),
+                    tagged: *tagged.value(),
+                    hlc: HlcDto::from(tagged.hlc()),
+                })
+                .collect(),
         }
     }
 }
@@ -187,6 +209,7 @@ impl TryFrom<TaskDto> for Task {
                 parent: dto
                     .parent
                     .map(|reg| decode(reg, |parent| parent.map(|parent| TaskId(parent.as_u128())))),
+                tags: decode_task_tags(dto.tags),
             },
         ))
     }
@@ -221,6 +244,20 @@ impl From<TimeEntryDto> for TimeEntry {
             dto.deleted.map(|reg| decode(reg, |deleted| deleted)),
         )
     }
+}
+
+/// A tag listed twice keeps its newer register, as merging would.
+fn decode_task_tags(tags: Vec<TaskTagDto>) -> BTreeMap<TagId, Lww<bool>> {
+    tags.into_iter().fold(BTreeMap::new(), |mut decoded, tag| {
+        let id = TagId(tag.tag_id.as_u128());
+        let register = Lww::new(tag.tagged, tag.hlc.into());
+        let merged = match decoded.remove(&id) {
+            Some(existing) => existing.merge(&register),
+            None => register,
+        };
+        decoded.insert(id, merged);
+        decoded
+    })
 }
 
 fn encode<T, U>(register: &Lww<T>, value: impl FnOnce(&T) -> U) -> RegisterDto<U>
@@ -291,6 +328,13 @@ pub(crate) mod tests {
         Task::empty(TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0002))
             .apply(&TaskChange::Status(TaskStatus::Todo), at(1_730_000_001_000))
             .apply(&TaskChange::Parent(Some(TASK)), at(1_730_000_001_000))
+            .apply(
+                &TaskChange::Tag {
+                    tag: crate::tag::tests::work_tag().id(),
+                    tagged: true,
+                },
+                at(1_730_000_001_000),
+            )
     }
 
     fn stopped_entry() -> TimeEntry {
@@ -402,6 +446,24 @@ pub(crate) mod tests {
         assert_eq!(task.registers().due, None);
         assert_eq!(task.registers().scheduled_at, None);
         assert_eq!(task.registers().parent, None);
+        assert!(task.registers().tags.is_empty());
+    }
+
+    #[test]
+    fn tag_listed_twice_keeps_its_newer_register() {
+        let tag = crate::tag::tests::work_tag().id();
+        let mut dto = TaskDto::from(&partial_task());
+        dto.tags = [(true, 5), (false, 9), (true, 7)]
+            .map(|(tagged, wall)| TaskTagDto {
+                tag_id: Uuid::from_u128(tag.0),
+                tagged,
+                hlc: HlcDto::from(at(wall)),
+            })
+            .to_vec();
+
+        let task = Task::try_from(dto).unwrap();
+
+        assert_eq!(task.registers().tags[&tag], Lww::new(false, at(9)));
     }
 
     #[test]
@@ -448,6 +510,10 @@ pub(crate) mod tests {
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
             prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
             prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
+            (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
+                tag: TagId(tag),
+                tagged
+            }),
         ];
         (
             any::<u128>(),

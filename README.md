@@ -46,7 +46,8 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
   everything below it.
 - **Tags** – tags are entities of their own whose id is derived from the
   name they were created with, so a tag created on two devices offline
-  becomes one.
+  becomes one. Whether a task carries a tag is a register per tag, so
+  tagging on one device never undoes tagging on another.
 - **No create operation** – a task, time entry or tag comes into existence
   when the first write for its id arrives, so operations may arrive in any
   order.

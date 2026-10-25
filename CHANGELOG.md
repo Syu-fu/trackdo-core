@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gets a fresh id. Creating a tag that exists returns it, and renaming to a
   name in use fails with `CommandError::TagNameTaken`. Names are compared
   exactly and are at most 50 characters.
+- Tagging tasks with `Replica::tag_task` and `untag_task`. Each tag on a
+  task is a register of its own, so tags added on different devices are all
+  kept. `Replica::tags_of` and `tasks_tagged` leave out deleted tags and
+  tags not received yet.
 - Stored states written by earlier versions, which lack the new task
   fields and tags, still load.
 

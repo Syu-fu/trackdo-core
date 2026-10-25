@@ -4,6 +4,7 @@ use super::{CommandError, Replica};
 use crate::env::{Clock, IdGen};
 use crate::op::OpTarget;
 use crate::tag::{Tag, TagChange, TagId, TagName};
+use crate::task::{Task, TaskChange, TaskId};
 
 impl<C: Clock, G: IdGen> Replica<C, G> {
     /// Creates a tag named `name` and returns its id, or returns the id of
@@ -42,6 +43,41 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn delete_tag(&mut self, id: TagId) -> Result<(), CommandError> {
         self.ensure_tag_editable(id)?;
         self.emit_tag(id, TagChange::Deleted(true))
+    }
+
+    pub fn tag_task(&mut self, task: TaskId, tag: TagId) -> Result<(), CommandError> {
+        self.ensure_editable(task)?;
+        self.ensure_tag_editable(tag)?;
+        self.emit_task(task, vec![TaskChange::Tag { tag, tagged: true }])
+    }
+
+    /// Works for deleted tags too, which stay on tasks but are not shown.
+    pub fn untag_task(&mut self, task: TaskId, tag: TagId) -> Result<(), CommandError> {
+        self.ensure_editable(task)?;
+        self.emit_task(task, vec![TaskChange::Tag { tag, tagged: false }])
+    }
+
+    /// Tags on `task` that are known and not deleted, ordered by id.
+    pub fn tags_of(&self, task: TaskId) -> Vec<&Tag> {
+        self.tasks
+            .get(&task)
+            .into_iter()
+            .flat_map(Task::tag_ids)
+            .filter_map(|tag| self.tags.get(&tag))
+            .filter(|tag| !tag.is_deleted())
+            .collect()
+    }
+
+    /// Tasks carrying `tag`, ordered by id. Empty for a deleted tag.
+    pub fn tasks_tagged(&self, tag: TagId) -> Vec<TaskId> {
+        if self.tags.get(&tag).is_none_or(Tag::is_deleted) {
+            return Vec::new();
+        }
+        self.tasks
+            .values()
+            .filter(|task| task.tag_ids().any(|id| id == tag))
+            .map(Task::id)
+            .collect()
     }
 
     pub fn tag(&self, id: TagId) -> Option<&Tag> {
@@ -214,6 +250,94 @@ mod tests {
         let mut expected = vec![a, b];
         expected.sort();
         assert_eq!(replica.tags().map(Tag::id).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn tag_task_and_untag_task_change_the_tasks_tags() {
+        let mut replica = replica();
+        let task = replica.create("a").unwrap();
+        let work = replica.create_tag("work").unwrap();
+        let home = replica.create_tag("home").unwrap();
+
+        replica.tag_task(task, work).unwrap();
+        replica.tag_task(task, home).unwrap();
+        replica.untag_task(task, home).unwrap();
+
+        let ids: Vec<_> = replica.tags_of(task).iter().map(|tag| tag.id()).collect();
+        assert_eq!(ids, vec![work]);
+        assert_eq!(replica.tasks_tagged(work), vec![task]);
+        assert_eq!(replica.tasks_tagged(home), Vec::<TaskId>::new());
+        assert_eq!(
+            changes(&replica).last(),
+            Some(&TaskChange::Tag {
+                tag: home,
+                tagged: false
+            })
+        );
+    }
+
+    #[test]
+    fn deleted_and_unknown_tags_are_not_shown_on_tasks() {
+        let mut replica = replica();
+        let task = replica.create("a").unwrap();
+        let work = replica.create_tag("work").unwrap();
+        replica.tag_task(task, work).unwrap();
+        let remote = Op::task(
+            OpId(900),
+            task,
+            Hlc::new(NOW + 1, 0, OTHER),
+            TaskChange::Tag {
+                tag: TagId(404),
+                tagged: true,
+            },
+        );
+        replica.apply_remote(&remote, Seq(1)).unwrap();
+
+        replica.delete_tag(work).unwrap();
+
+        assert!(replica.tags_of(task).is_empty());
+        assert_eq!(replica.tasks_tagged(work), Vec::<TaskId>::new());
+    }
+
+    #[test]
+    fn tagging_needs_an_editable_task_and_a_live_tag() {
+        let mut replica = replica();
+        let task = replica.create("a").unwrap();
+        let gone_task = replica.create("gone").unwrap();
+        replica.delete(gone_task).unwrap();
+        let work = replica.create_tag("work").unwrap();
+        let gone_tag = replica.create_tag("gone").unwrap();
+        replica.delete_tag(gone_tag).unwrap();
+        let pending_before = replica.pending_ops().len();
+
+        assert_eq!(
+            replica.tag_task(gone_task, work),
+            Err(CommandError::Deleted(gone_task))
+        );
+        assert_eq!(
+            replica.tag_task(task, gone_tag),
+            Err(CommandError::TagDeleted(gone_tag))
+        );
+        assert_eq!(
+            replica.tag_task(task, TagId(404)),
+            Err(CommandError::TagNotFound(TagId(404)))
+        );
+        assert_eq!(
+            replica.untag_task(gone_task, work),
+            Err(CommandError::Deleted(gone_task))
+        );
+        assert_eq!(replica.pending_ops().len(), pending_before);
+    }
+
+    #[test]
+    fn untagging_a_deleted_tag_is_allowed() {
+        let mut replica = replica();
+        let task = replica.create("a").unwrap();
+        let work = replica.create_tag("work").unwrap();
+        replica.tag_task(task, work).unwrap();
+        replica.delete_tag(work).unwrap();
+
+        assert_eq!(replica.untag_task(task, work), Ok(()));
     }
 
     #[test]

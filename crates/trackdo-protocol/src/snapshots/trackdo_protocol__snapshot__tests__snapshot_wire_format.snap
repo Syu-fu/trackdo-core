@@ -64,7 +64,8 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
       },
-      "parent": null
+      "parent": null,
+      "tags": []
     },
     {
       "id": "01928f3a-0000-7000-8000-000000000002",
@@ -89,7 +90,18 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "counter": 0,
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
-      }
+      },
+      "tags": [
+        {
+          "tag_id": "dc59ba82-d0ee-5fec-b8e2-c6935ec3ee03",
+          "tagged": true,
+          "hlc": {
+            "wall_ms": 1730000001000,
+            "counter": 0,
+            "device": "01928f39-ffff-7abc-9def-0123456789ab"
+          }
+        }
+      ]
     }
   ],
   "time_entries": [
