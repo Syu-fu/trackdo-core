@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   characters, where concurrent edits keep the newest one as a whole. Line
   breaks are normalized to `\n` and trailing whitespace is dropped; an empty
   note removes it.
+- Task due date, set with `Replica::set_due`: a `Date` without a time zone,
+  sent as `YYYY-MM-DD`, so it names the same day wherever the device is.
 - Stored states written by earlier versions, which lack the new task
   fields, still load.
 

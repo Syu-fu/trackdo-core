@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use trackdo_core::date::DateError;
 use trackdo_core::note::{Note, NoteError};
 use trackdo_core::title::{Title, TitleError};
 
@@ -18,6 +19,10 @@ pub enum ProtocolError {
     /// Notes are not normalized on receipt either.
     #[error("note is not in canonical form")]
     NonCanonicalNote,
+    #[error("invalid date: {0}")]
+    InvalidDate(#[from] DateError),
+    #[error("date is not `YYYY-MM-DD`")]
+    InvalidDateFormat,
     #[error("event id is not `<log_id>:<seq>`")]
     InvalidEventId,
 }

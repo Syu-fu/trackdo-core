@@ -9,6 +9,7 @@ use trackdo_core::replica::Snapshot;
 use trackdo_core::task::{Task, TaskId, TaskPriority, TaskRegisters, TaskStatus};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
+use crate::date::{decode_date, encode_date};
 use crate::error::{ProtocolError, decode_note, decode_title};
 use crate::op::{HlcDto, TaskPriorityDto, TaskStatusDto};
 
@@ -36,6 +37,9 @@ pub struct TaskDto {
     pub priority: Option<RegisterDto<TaskPriorityDto>>,
     #[serde(default)]
     pub note: Option<RegisterDto<String>>,
+    /// A `null` value means the due date was cleared.
+    #[serde(default)]
+    pub due: Option<RegisterDto<Option<String>>>,
 }
 
 /// A time entry with every field's register. Times are Unix milliseconds.
@@ -116,6 +120,10 @@ impl From<&Task> for TaskDto {
                 .note
                 .as_ref()
                 .map(|reg| encode(reg, |note| note.as_str().to_owned())),
+            due: registers
+                .due
+                .as_ref()
+                .map(|reg| encode(reg, |due| due.map(encode_date))),
         }
     }
 }
@@ -132,6 +140,13 @@ impl TryFrom<TaskDto> for Task {
             .note
             .map(|reg| Ok::<_, ProtocolError>(Lww::new(decode_note(&reg.value)?, reg.hlc.into())))
             .transpose()?;
+        let due = dto
+            .due
+            .map(|reg| {
+                let due = reg.value.as_deref().map(decode_date).transpose()?;
+                Ok::<_, ProtocolError>(Lww::new(due, reg.hlc.into()))
+            })
+            .transpose()?;
         Ok(Self::from_registers(
             TaskId(dto.id.as_u128()),
             TaskRegisters {
@@ -140,6 +155,7 @@ impl TryFrom<TaskDto> for Task {
                 deleted: dto.deleted.map(|reg| decode(reg, |deleted| deleted)),
                 priority: dto.priority.map(|reg| decode(reg, TaskPriority::from)),
                 note,
+                due,
             },
         ))
     }
@@ -197,6 +213,7 @@ where
 pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
+    use trackdo_core::date::Date;
     use trackdo_core::hlc::{DeviceId, Hlc};
     use trackdo_core::note::Note;
     use trackdo_core::task::TaskChange;
@@ -228,6 +245,10 @@ pub(crate) mod tests {
             .apply(
                 &TaskChange::Note(Note::new("oat milk if out").unwrap()),
                 at(1_730_000_000_990),
+            )
+            .apply(
+                &TaskChange::Due(Some(Date::new(2024, 10, 31).unwrap())),
+                at(1_730_000_000_995),
             )
     }
 
@@ -330,6 +351,7 @@ pub(crate) mod tests {
 
         assert_eq!(task.registers().priority, None);
         assert_eq!(task.registers().note, None);
+        assert_eq!(task.registers().due, None);
     }
 
     #[test]
@@ -373,6 +395,7 @@ pub(crate) mod tests {
             ])
             .prop_map(TaskChange::Priority),
             "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
+            prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
         ];
         (
             any::<u128>(),

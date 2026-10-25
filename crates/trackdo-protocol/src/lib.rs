@@ -5,6 +5,7 @@
 //! [`state`] holds the form hosts store locally instead; it never goes over
 //! the wire.
 
+mod date;
 pub mod error;
 pub mod event;
 pub mod op;

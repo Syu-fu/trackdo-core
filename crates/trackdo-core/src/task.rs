@@ -1,5 +1,6 @@
 //! Task aggregate built from independent last-writer-wins fields.
 
+use crate::date::Date;
 use crate::hlc::Hlc;
 use crate::lww::{Lww, join, write};
 use crate::note::Note;
@@ -31,6 +32,8 @@ pub enum TaskChange {
     Deleted(bool),
     Priority(TaskPriority),
     Note(Note),
+    /// `None` clears the due date.
+    Due(Option<Date>),
 }
 
 /// The register of every task field. Each is `None` until its first write
@@ -43,6 +46,7 @@ pub struct TaskRegisters {
     pub deleted: Option<Lww<bool>>,
     pub priority: Option<Lww<TaskPriority>>,
     pub note: Option<Lww<Note>>,
+    pub due: Option<Lww<Option<Date>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +66,7 @@ impl Task {
                 deleted: None,
                 priority: None,
                 note: None,
+                due: None,
             },
         }
     }
@@ -107,6 +112,10 @@ impl Task {
             .filter(|note| !note.is_empty())
     }
 
+    pub fn due(&self) -> Option<Date> {
+        self.registers.due.as_ref().and_then(|due| *due.value())
+    }
+
     /// Deletion is a tombstone: edits to other fields never clear it.
     pub fn is_deleted(&self) -> bool {
         self.registers
@@ -139,6 +148,10 @@ impl Task {
                 note: Some(write(&current.note, note.clone(), hlc)),
                 ..current.clone()
             },
+            TaskChange::Due(due) => TaskRegisters {
+                due: Some(write(&current.due, *due, hlc)),
+                ..current.clone()
+            },
         };
         Self {
             id: self.id,
@@ -154,6 +167,7 @@ impl Task {
             deleted,
             priority,
             note,
+            due,
         } = &self.registers;
         let title = title
             .as_ref()
@@ -170,7 +184,10 @@ impl Task {
         let note = note
             .as_ref()
             .map(|note| (TaskChange::Note(note.value().clone()), note.hlc()));
-        [title, status, deleted, priority, note]
+        let due = due
+            .as_ref()
+            .map(|due| (TaskChange::Due(*due.value()), due.hlc()));
+        [title, status, deleted, priority, note, due]
             .into_iter()
             .flatten()
     }
@@ -183,13 +200,18 @@ impl Task {
             deleted,
             priority,
             note,
+            due,
         } = &self.registers;
         let title = title.as_ref().map(Lww::hlc);
         let status = status.as_ref().map(Lww::hlc);
         let deleted = deleted.as_ref().map(Lww::hlc);
         let priority = priority.as_ref().map(Lww::hlc);
         let note = note.as_ref().map(Lww::hlc);
-        title.max(status).max(deleted).max(priority).max(note)
+        let due = due.as_ref().map(Lww::hlc);
+        [title, status, deleted, priority, note, due]
+            .into_iter()
+            .flatten()
+            .max()
     }
 
     /// Field-wise join with another copy of the same task, as received in a
@@ -205,6 +227,7 @@ impl Task {
                 deleted: join(&a.deleted, &b.deleted),
                 priority: join(&a.priority, &b.priority),
                 note: join(&a.note, &b.note),
+                due: join(&a.due, &b.due),
             },
         }
     }
@@ -222,6 +245,10 @@ mod tests {
 
     fn title(s: &str) -> Title {
         Title::new(s).unwrap()
+    }
+
+    fn date(day: u8) -> Date {
+        Date::new(2026, 10, day).unwrap()
     }
 
     fn note(s: &str) -> Note {
@@ -275,6 +302,18 @@ mod tests {
 
         assert_eq!(task.note(), None);
         assert!(task.registers().note.is_some());
+    }
+
+    #[test]
+    fn due_date_follows_newest_write_and_can_be_cleared() {
+        let task = Task::empty(ID);
+        assert_eq!(task.due(), None);
+
+        let task = task.apply(&TaskChange::Due(Some(date(25))), at(1, A));
+        assert_eq!(task.due(), Some(date(25)));
+
+        let task = task.apply(&TaskChange::Due(None), at(2, B));
+        assert_eq!(task.due(), None);
     }
 
     #[test]
@@ -347,6 +386,7 @@ mod tests {
             ])
             .prop_map(TaskChange::Priority),
             prop::sample::select(vec!["", "x", "y\nz"]).prop_map(|s| TaskChange::Note(note(s))),
+            prop::option::of(1u8..4).prop_map(|day| TaskChange::Due(day.map(date))),
         ]
     }
 
@@ -374,6 +414,7 @@ mod tests {
             deleted: Some(deleted_reg),
             priority: Some(Lww::new(TaskPriority::High, at(4, A))),
             note: Some(Lww::new(note("n"), at(5, B))),
+            due: Some(Lww::new(Some(date(1)), at(6, A))),
         };
 
         let task = Task::from_registers(ID, registers.clone());

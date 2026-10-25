@@ -8,6 +8,7 @@ use trackdo_core::op::{Op, OpId, OpTarget};
 use trackdo_core::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
 use trackdo_core::time_entry::{TimeEntryChange, TimeEntryId, Timestamp};
 
+use crate::date::{decode_date, encode_date};
 use crate::error::{ProtocolError, decode_note, decode_title};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +47,8 @@ pub enum TaskChangeDto {
     Deleted(bool),
     Priority(TaskPriorityDto),
     Note(String),
+    /// `YYYY-MM-DD`, or `null` to clear the due date.
+    Due(Option<String>),
 }
 
 /// Times are milliseconds since the Unix epoch, in UTC. `stopped_at: null`
@@ -162,6 +165,7 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::Deleted(deleted) => Self::Deleted(*deleted),
             TaskChange::Priority(priority) => Self::Priority(TaskPriorityDto::from(*priority)),
             TaskChange::Note(note) => Self::Note(note.as_str().to_owned()),
+            TaskChange::Due(due) => Self::Due(due.map(encode_date)),
         }
     }
 }
@@ -176,6 +180,7 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Deleted(deleted) => Ok(Self::Deleted(deleted)),
             TaskChangeDto::Priority(priority) => Ok(Self::Priority(TaskPriority::from(priority))),
             TaskChangeDto::Note(raw) => Ok(Self::Note(decode_note(&raw)?)),
+            TaskChangeDto::Due(raw) => Ok(Self::Due(raw.as_deref().map(decode_date).transpose()?)),
         }
     }
 }
@@ -246,6 +251,7 @@ impl From<TaskPriorityDto> for TaskPriority {
 pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
+    use trackdo_core::date::Date;
     use trackdo_core::note::Note;
     use trackdo_core::title::{Title, TitleError};
 
@@ -327,6 +333,25 @@ pub(crate) mod tests {
         let json = wire(serde_json::json!({ "field": "note", "value": long }));
 
         assert!(matches!(decode(json), Err(ProtocolError::InvalidNote(_))));
+    }
+
+    #[test]
+    fn due_op_wire_format() {
+        let due = Date::new(2026, 10, 31).unwrap();
+
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Due(Some(due)))));
+    }
+
+    #[test]
+    fn cleared_due_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Due(None))));
+    }
+
+    #[test]
+    fn rejects_invalid_due_date() {
+        let json = wire(serde_json::json!({ "field": "due", "value": "2026-02-29" }));
+
+        assert!(matches!(decode(json), Err(ProtocolError::InvalidDate(_))));
     }
 
     #[test]
@@ -481,6 +506,7 @@ pub(crate) mod tests {
             ])
             .prop_map(TaskChange::Priority),
             "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
+            prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
         ];
         (
             any::<u128>(),

@@ -1,6 +1,7 @@
 //! Commands on tasks.
 
 use super::{CommandError, Replica};
+use crate::date::Date;
 use crate::env::{Clock, IdGen};
 use crate::note::Note;
 use crate::op::OpTarget;
@@ -48,6 +49,12 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.ensure_editable(id)?;
         let note = Note::new(note)?;
         self.emit_task(id, vec![TaskChange::Note(note)])
+    }
+
+    /// `None` clears the due date.
+    pub fn set_due(&mut self, id: TaskId, due: Option<Date>) -> Result<(), CommandError> {
+        self.ensure_editable(id)?;
+        self.emit_task(id, vec![TaskChange::Due(due)])
     }
 
     /// Also stops the task's running timer.
@@ -204,6 +211,20 @@ mod tests {
     }
 
     #[test]
+    fn set_due_sets_and_clears_due_date() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        let due = Date::new(2026, 10, 31).unwrap();
+
+        replica.set_due(id, Some(due)).unwrap();
+        assert_eq!(replica.task(id).unwrap().due(), Some(due));
+
+        replica.set_due(id, None).unwrap();
+        assert_eq!(replica.task(id).unwrap().due(), None);
+        assert_eq!(changes(&replica).last(), Some(&TaskChange::Due(None)));
+    }
+
+    #[test]
     fn set_note_rejects_too_long_note() {
         let mut replica = replica();
         let id = replica.create("a").unwrap();
@@ -258,6 +279,10 @@ mod tests {
             replica.set_note(unknown, "a"),
             Err(CommandError::NotFound(unknown))
         );
+        assert_eq!(
+            replica.set_due(unknown, None),
+            Err(CommandError::NotFound(unknown))
+        );
         assert!(replica.pending_ops().is_empty());
     }
 
@@ -277,6 +302,7 @@ mod tests {
             Err(CommandError::Deleted(id))
         );
         assert_eq!(replica.set_note(id, "a"), Err(CommandError::Deleted(id)));
+        assert_eq!(replica.set_due(id, None), Err(CommandError::Deleted(id)));
         assert_eq!(replica.pending_ops().len(), pending_before);
     }
 }

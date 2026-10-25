@@ -47,6 +47,14 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "counter": 0,
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
+      },
+      "due": {
+        "value": "2024-10-31",
+        "hlc": {
+          "wall_ms": 1730000000995,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
       }
     },
     {
@@ -62,7 +70,8 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
       },
       "deleted": null,
       "priority": null,
-      "note": null
+      "note": null,
+      "due": null
     }
   ],
   "time_entries": [
