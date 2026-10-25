@@ -6,11 +6,11 @@ use uuid::Uuid;
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Seq};
 use trackdo_core::replica::Snapshot;
-use trackdo_core::task::{Task, TaskId, TaskRegisters, TaskStatus};
+use trackdo_core::task::{Task, TaskId, TaskPriority, TaskRegisters, TaskStatus};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
 use crate::error::{ProtocolError, decode_title};
-use crate::op::{HlcDto, TaskStatusDto};
+use crate::op::{HlcDto, TaskPriorityDto, TaskStatusDto};
 
 /// All tasks and time entries of the log `log_id` as of `seq`. `seq` is
 /// `null` when the log is still empty.
@@ -23,12 +23,17 @@ pub struct SnapshotDto {
 }
 
 /// A task with every field's register, so receivers can merge it exactly.
+///
+/// Fields added after v0.3 may be missing, so states stored by older
+/// versions still load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskDto {
     pub id: Uuid,
     pub title: Option<RegisterDto<String>>,
     pub status: Option<RegisterDto<TaskStatusDto>>,
     pub deleted: Option<RegisterDto<bool>>,
+    #[serde(default)]
+    pub priority: Option<RegisterDto<TaskPriorityDto>>,
 }
 
 /// A time entry with every field's register. Times are Unix milliseconds.
@@ -101,6 +106,10 @@ impl From<&Task> for TaskDto {
                 .deleted
                 .as_ref()
                 .map(|reg| encode(reg, |deleted| *deleted)),
+            priority: registers
+                .priority
+                .as_ref()
+                .map(|reg| encode(reg, |priority| TaskPriorityDto::from(*priority))),
         }
     }
 }
@@ -119,6 +128,7 @@ impl TryFrom<TaskDto> for Task {
                 title,
                 status: dto.status.map(|reg| decode(reg, TaskStatus::from)),
                 deleted: dto.deleted.map(|reg| decode(reg, |deleted| deleted)),
+                priority: dto.priority.map(|reg| decode(reg, TaskPriority::from)),
             },
         ))
     }
@@ -199,6 +209,10 @@ pub(crate) mod tests {
             .apply(&TaskChange::Title(title("buy milk")), at(1_730_000_000_000))
             .apply(&TaskChange::Status(TaskStatus::Done), at(1_730_000_000_500))
             .apply(&TaskChange::Deleted(false), at(1_730_000_000_900))
+            .apply(
+                &TaskChange::Priority(TaskPriority::High),
+                at(1_730_000_000_950),
+            )
     }
 
     fn partial_task() -> Task {
@@ -286,6 +300,21 @@ pub(crate) mod tests {
         assert!(serde_json::from_value::<SnapshotDto>(json).is_err());
     }
 
+    /// Stored states written before priorities existed must still load.
+    #[test]
+    fn accepts_task_without_priority() {
+        let json = serde_json::json!({
+            "id": "01928f3a-0000-7000-8000-000000000001",
+            "title": null,
+            "status": null,
+            "deleted": null,
+        });
+
+        let task = Task::try_from(serde_json::from_value::<TaskDto>(json).unwrap()).unwrap();
+
+        assert_eq!(task.registers().priority, None);
+    }
+
     #[test]
     fn rejects_non_canonical_title_register() {
         let mut dto = TaskDto::from(&full_task());
@@ -308,6 +337,13 @@ pub(crate) mod tests {
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])
                 .prop_map(TaskChange::Status),
             any::<bool>().prop_map(TaskChange::Deleted),
+            prop::sample::select(vec![
+                TaskPriority::None,
+                TaskPriority::Low,
+                TaskPriority::Medium,
+                TaskPriority::High,
+            ])
+            .prop_map(TaskChange::Priority),
         ];
         (
             any::<u128>(),

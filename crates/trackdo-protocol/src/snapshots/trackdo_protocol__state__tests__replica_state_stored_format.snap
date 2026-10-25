@@ -34,6 +34,14 @@ expression: "ReplicaStateDto::from(&state())"
           "counter": 0,
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
+      },
+      "priority": {
+        "value": "high",
+        "hlc": {
+          "wall_ms": 1730000000950,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
       }
     }
   ],

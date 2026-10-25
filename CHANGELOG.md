@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Task priority (`none`, `low`, `medium`, `high`), set with
+  `Replica::set_priority`. Stored states without it still load.
+
 ### Changed
+
+- **Breaking:** `PROTOCOL_VERSION` is 4, as operations may now carry task
+  fields that older clients cannot decode.
 
 - **Breaking:** `Task::from_registers` takes a `TaskRegisters`, and
   `Task::registers` replaces the `*_register` accessors, so adding a task

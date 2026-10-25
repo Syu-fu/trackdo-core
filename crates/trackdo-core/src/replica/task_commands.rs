@@ -3,7 +3,7 @@
 use super::{CommandError, Replica};
 use crate::env::{Clock, IdGen};
 use crate::op::OpTarget;
-use crate::task::{TaskChange, TaskId, TaskStatus};
+use crate::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
 use crate::title::Title;
 
 impl<C: Clock, G: IdGen> Replica<C, G> {
@@ -35,6 +35,11 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn reopen(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
         self.emit_task(id, vec![TaskChange::Status(TaskStatus::Todo)])
+    }
+
+    pub fn set_priority(&mut self, id: TaskId, priority: TaskPriority) -> Result<(), CommandError> {
+        self.ensure_editable(id)?;
+        self.emit_task(id, vec![TaskChange::Priority(priority)])
     }
 
     /// Also stops the task's running timer.
@@ -157,6 +162,20 @@ mod tests {
     }
 
     #[test]
+    fn set_priority_updates_priority() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+
+        replica.set_priority(id, TaskPriority::High).unwrap();
+
+        assert_eq!(replica.task(id).unwrap().priority(), TaskPriority::High);
+        assert_eq!(
+            changes(&replica).last(),
+            Some(&TaskChange::Priority(TaskPriority::High))
+        );
+    }
+
+    #[test]
     fn delete_marks_task_as_deleted() {
         let mut replica = replica();
         let id = replica.create("a").unwrap();
@@ -188,6 +207,10 @@ mod tests {
             replica.delete(unknown),
             Err(CommandError::NotFound(unknown))
         );
+        assert_eq!(
+            replica.set_priority(unknown, TaskPriority::Low),
+            Err(CommandError::NotFound(unknown))
+        );
         assert!(replica.pending_ops().is_empty());
     }
 
@@ -202,6 +225,10 @@ mod tests {
         assert_eq!(replica.complete(id), Err(CommandError::Deleted(id)));
         assert_eq!(replica.reopen(id), Err(CommandError::Deleted(id)));
         assert_eq!(replica.delete(id), Err(CommandError::Deleted(id)));
+        assert_eq!(
+            replica.set_priority(id, TaskPriority::Low),
+            Err(CommandError::Deleted(id))
+        );
         assert_eq!(replica.pending_ops().len(), pending_before);
     }
 }

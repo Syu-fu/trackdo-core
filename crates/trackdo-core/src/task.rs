@@ -13,12 +13,22 @@ pub enum TaskStatus {
     Done,
 }
 
+/// Ordered from least to most urgent, so tasks can be sorted by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TaskPriority {
+    None,
+    Low,
+    Medium,
+    High,
+}
+
 /// A write to a single task field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskChange {
     Title(Title),
     Status(TaskStatus),
     Deleted(bool),
+    Priority(TaskPriority),
 }
 
 /// The register of every task field. Each is `None` until its first write
@@ -29,6 +39,7 @@ pub struct TaskRegisters {
     pub title: Option<Lww<Title>>,
     pub status: Option<Lww<TaskStatus>>,
     pub deleted: Option<Lww<bool>>,
+    pub priority: Option<Lww<TaskPriority>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +57,7 @@ impl Task {
                 title: None,
                 status: None,
                 deleted: None,
+                priority: None,
             },
         }
     }
@@ -75,6 +87,13 @@ impl Task {
             .map_or(TaskStatus::Todo, |status| *status.value())
     }
 
+    pub fn priority(&self) -> TaskPriority {
+        self.registers
+            .priority
+            .as_ref()
+            .map_or(TaskPriority::None, |priority| *priority.value())
+    }
+
     /// Deletion is a tombstone: edits to other fields never clear it.
     pub fn is_deleted(&self) -> bool {
         self.registers
@@ -99,6 +118,10 @@ impl Task {
                 deleted: Some(write(&current.deleted, *deleted, hlc)),
                 ..current.clone()
             },
+            TaskChange::Priority(priority) => TaskRegisters {
+                priority: Some(write(&current.priority, *priority, hlc)),
+                ..current.clone()
+            },
         };
         Self {
             id: self.id,
@@ -112,6 +135,7 @@ impl Task {
             title,
             status,
             deleted,
+            priority,
         } = &self.registers;
         let title = title
             .as_ref()
@@ -122,7 +146,10 @@ impl Task {
         let deleted = deleted
             .as_ref()
             .map(|deleted| (TaskChange::Deleted(*deleted.value()), deleted.hlc()));
-        [title, status, deleted].into_iter().flatten()
+        let priority = priority
+            .as_ref()
+            .map(|priority| (TaskChange::Priority(*priority.value()), priority.hlc()));
+        [title, status, deleted, priority].into_iter().flatten()
     }
 
     /// Timestamp of the most recent write to any field.
@@ -131,11 +158,13 @@ impl Task {
             title,
             status,
             deleted,
+            priority,
         } = &self.registers;
         let title = title.as_ref().map(Lww::hlc);
         let status = status.as_ref().map(Lww::hlc);
         let deleted = deleted.as_ref().map(Lww::hlc);
-        title.max(status).max(deleted)
+        let priority = priority.as_ref().map(Lww::hlc);
+        title.max(status).max(deleted).max(priority)
     }
 
     /// Field-wise join with another copy of the same task, as received in a
@@ -149,6 +178,7 @@ impl Task {
                 title: join(&a.title, &b.title),
                 status: join(&a.status, &b.status),
                 deleted: join(&a.deleted, &b.deleted),
+                priority: join(&a.priority, &b.priority),
             },
         }
     }
@@ -192,6 +222,25 @@ mod tests {
         assert_eq!(task.title(), Some(&title("milk")));
         assert_eq!(task.status(), TaskStatus::Done);
         assert!(task.is_deleted());
+    }
+
+    #[test]
+    fn priority_defaults_to_none_and_follows_newest_write() {
+        let task = Task::empty(ID);
+        assert_eq!(task.priority(), TaskPriority::None);
+
+        let task = task
+            .apply(&TaskChange::Priority(TaskPriority::High), at(2, A))
+            .apply(&TaskChange::Priority(TaskPriority::Low), at(1, B));
+
+        assert_eq!(task.priority(), TaskPriority::High);
+    }
+
+    #[test]
+    fn priorities_order_from_none_to_high() {
+        assert!(TaskPriority::None < TaskPriority::Low);
+        assert!(TaskPriority::Low < TaskPriority::Medium);
+        assert!(TaskPriority::Medium < TaskPriority::High);
     }
 
     #[test]
@@ -249,6 +298,13 @@ mod tests {
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])
                 .prop_map(TaskChange::Status),
             any::<bool>().prop_map(TaskChange::Deleted),
+            prop::sample::select(vec![
+                TaskPriority::None,
+                TaskPriority::Low,
+                TaskPriority::Medium,
+                TaskPriority::High,
+            ])
+            .prop_map(TaskChange::Priority),
         ]
     }
 
@@ -274,6 +330,7 @@ mod tests {
             title: Some(title_reg),
             status: Some(status_reg),
             deleted: Some(deleted_reg),
+            priority: Some(Lww::new(TaskPriority::High, at(4, A))),
         };
 
         let task = Task::from_registers(ID, registers.clone());

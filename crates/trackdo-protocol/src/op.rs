@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::op::{Op, OpId, OpTarget};
-use trackdo_core::task::{TaskChange, TaskId, TaskStatus};
+use trackdo_core::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
 use trackdo_core::time_entry::{TimeEntryChange, TimeEntryId, Timestamp};
 
 use crate::error::{ProtocolError, decode_title};
@@ -44,6 +44,7 @@ pub enum TaskChangeDto {
     Title(String),
     Status(TaskStatusDto),
     Deleted(bool),
+    Priority(TaskPriorityDto),
 }
 
 /// Times are milliseconds since the Unix epoch, in UTC. `stopped_at: null`
@@ -61,6 +62,15 @@ pub enum TimeEntryChangeDto {
 pub enum TaskStatusDto {
     Todo,
     Done,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskPriorityDto {
+    None,
+    Low,
+    Medium,
+    High,
 }
 
 impl From<&Op> for OpDto {
@@ -149,6 +159,7 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::Title(title) => Self::Title(title.as_str().to_owned()),
             TaskChange::Status(status) => Self::Status(TaskStatusDto::from(*status)),
             TaskChange::Deleted(deleted) => Self::Deleted(*deleted),
+            TaskChange::Priority(priority) => Self::Priority(TaskPriorityDto::from(*priority)),
         }
     }
 }
@@ -161,6 +172,7 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Title(raw) => Ok(Self::Title(decode_title(&raw)?)),
             TaskChangeDto::Status(status) => Ok(Self::Status(TaskStatus::from(status))),
             TaskChangeDto::Deleted(deleted) => Ok(Self::Deleted(deleted)),
+            TaskChangeDto::Priority(priority) => Ok(Self::Priority(TaskPriority::from(priority))),
         }
     }
 }
@@ -201,6 +213,28 @@ impl From<TaskStatusDto> for TaskStatus {
         match dto {
             TaskStatusDto::Todo => Self::Todo,
             TaskStatusDto::Done => Self::Done,
+        }
+    }
+}
+
+impl From<TaskPriority> for TaskPriorityDto {
+    fn from(priority: TaskPriority) -> Self {
+        match priority {
+            TaskPriority::None => Self::None,
+            TaskPriority::Low => Self::Low,
+            TaskPriority::Medium => Self::Medium,
+            TaskPriority::High => Self::High,
+        }
+    }
+}
+
+impl From<TaskPriorityDto> for TaskPriority {
+    fn from(dto: TaskPriorityDto) -> Self {
+        match dto {
+            TaskPriorityDto::None => Self::None,
+            TaskPriorityDto::Low => Self::Low,
+            TaskPriorityDto::Medium => Self::Medium,
+            TaskPriorityDto::High => Self::High,
         }
     }
 }
@@ -262,6 +296,11 @@ pub(crate) mod tests {
     #[test]
     fn status_op_wire_format() {
         insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Status(TaskStatus::Done))));
+    }
+
+    #[test]
+    fn priority_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Priority(TaskPriority::Medium))));
     }
 
     #[test]
@@ -408,6 +447,13 @@ pub(crate) mod tests {
             prop::sample::select(vec![TaskStatus::Todo, TaskStatus::Done])
                 .prop_map(TaskChange::Status),
             any::<bool>().prop_map(TaskChange::Deleted),
+            prop::sample::select(vec![
+                TaskPriority::None,
+                TaskPriority::Low,
+                TaskPriority::Medium,
+                TaskPriority::High,
+            ])
+            .prop_map(TaskChange::Priority),
         ];
         (
             any::<u128>(),

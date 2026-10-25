@@ -14,7 +14,7 @@ use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Op, OpId, OpTarget, Seq};
 use trackdo_core::replica::{CommandError, Replica, Snapshot};
-use trackdo_core::task::{Task, TaskId};
+use trackdo_core::task::{Task, TaskId, TaskPriority};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
 const REPLICAS: usize = 3;
@@ -336,6 +336,7 @@ enum Edit {
     Complete(usize),
     Reopen(usize),
     Delete(usize),
+    SetPriority(usize, TaskPriority),
     Start(usize),
     Stop(usize),
     /// Start and optional stop, as milliseconds before now.
@@ -364,6 +365,15 @@ fn title() -> impl Strategy<Value = String> {
     prop::sample::select(vec!["milk", "eggs", "bread", "call mom", "牛乳"]).prop_map(String::from)
 }
 
+fn priority() -> impl Strategy<Value = TaskPriority> {
+    prop::sample::select(vec![
+        TaskPriority::None,
+        TaskPriority::Low,
+        TaskPriority::Medium,
+        TaskPriority::High,
+    ])
+}
+
 fn edit() -> impl Strategy<Value = Edit> {
     let i = any::<usize>;
     let ago = || 0u64..3_000;
@@ -373,6 +383,7 @@ fn edit() -> impl Strategy<Value = Edit> {
         1 => i().prop_map(Edit::Complete),
         1 => i().prop_map(Edit::Reopen),
         1 => i().prop_map(Edit::Delete),
+        1 => (i(), priority()).prop_map(|(i, p)| Edit::SetPriority(i, p)),
         3 => i().prop_map(Edit::Start),
         1 => i().prop_map(Edit::Stop),
         1 => (i(), ago(), prop::option::of(ago()))
@@ -405,6 +416,7 @@ fn run_edit(node: &mut Node, edit: &Edit) {
         Edit::Complete(_) => on(node, task, Replica::complete),
         Edit::Reopen(_) => on(node, task, Replica::reopen),
         Edit::Delete(_) => on(node, task, Replica::delete),
+        Edit::SetPriority(_, priority) => on(node, task, |r, id| r.set_priority(id, *priority)),
         Edit::Start(_) => on(node, task, |r, id| r.start(id).map(drop)),
         Edit::Stop(_) => on(node, entry, Replica::stop),
         Edit::SetTimes(_, start, stop) => {
@@ -442,6 +454,7 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::Complete(i)
         | Edit::Reopen(i)
         | Edit::Delete(i)
+        | Edit::SetPriority(i, _)
         | Edit::Start(i)
         | Edit::Stop(i)
         | Edit::SetTimes(i, ..)
@@ -504,6 +517,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
         task.registers().title.as_ref().map(Lww::hlc),
         task.registers().status.as_ref().map(Lww::hlc),
         task.registers().deleted.as_ref().map(Lww::hlc),
+        task.registers().priority.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()
