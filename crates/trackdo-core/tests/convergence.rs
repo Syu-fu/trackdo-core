@@ -543,6 +543,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
         task.registers().note.as_ref().map(Lww::hlc),
         task.registers().due.as_ref().map(Lww::hlc),
         task.registers().scheduled_at.as_ref().map(Lww::hlc),
+        task.registers().parent.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()

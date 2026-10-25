@@ -37,6 +37,8 @@ pub enum TaskChange {
     Due(Option<Date>),
     /// When the task is planned to be worked on; `None` unschedules it.
     ScheduledAt(Option<Timestamp>),
+    /// `None` moves the task to the top level.
+    Parent(Option<TaskId>),
 }
 
 /// The register of every task field. Each is `None` until its first write
@@ -51,6 +53,7 @@ pub struct TaskRegisters {
     pub note: Option<Lww<Note>>,
     pub due: Option<Lww<Option<Date>>>,
     pub scheduled_at: Option<Lww<Option<Timestamp>>>,
+    pub parent: Option<Lww<Option<TaskId>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +75,7 @@ impl Task {
                 note: None,
                 due: None,
                 scheduled_at: None,
+                parent: None,
             },
         }
     }
@@ -128,6 +132,15 @@ impl Task {
             .and_then(|scheduled| *scheduled.value())
     }
 
+    /// The parent as written. The parent that takes effect may differ; see
+    /// [`crate::hierarchy::Hierarchy`].
+    pub fn parent(&self) -> Option<TaskId> {
+        self.registers
+            .parent
+            .as_ref()
+            .and_then(|parent| *parent.value())
+    }
+
     /// Deletion is a tombstone: edits to other fields never clear it.
     pub fn is_deleted(&self) -> bool {
         self.registers
@@ -168,6 +181,10 @@ impl Task {
                 scheduled_at: Some(write(&current.scheduled_at, *scheduled, hlc)),
                 ..current.clone()
             },
+            TaskChange::Parent(parent) => TaskRegisters {
+                parent: Some(write(&current.parent, *parent, hlc)),
+                ..current.clone()
+            },
         };
         Self {
             id: self.id,
@@ -185,6 +202,7 @@ impl Task {
             note,
             due,
             scheduled_at,
+            parent,
         } = &self.registers;
         let title = title
             .as_ref()
@@ -207,9 +225,21 @@ impl Task {
         let scheduled_at = scheduled_at
             .as_ref()
             .map(|scheduled| (TaskChange::ScheduledAt(*scheduled.value()), scheduled.hlc()));
-        [title, status, deleted, priority, note, due, scheduled_at]
-            .into_iter()
-            .flatten()
+        let parent = parent
+            .as_ref()
+            .map(|parent| (TaskChange::Parent(*parent.value()), parent.hlc()));
+        [
+            title,
+            status,
+            deleted,
+            priority,
+            note,
+            due,
+            scheduled_at,
+            parent,
+        ]
+        .into_iter()
+        .flatten()
     }
 
     /// Timestamp of the most recent write to any field.
@@ -222,6 +252,7 @@ impl Task {
             note,
             due,
             scheduled_at,
+            parent,
         } = &self.registers;
         let title = title.as_ref().map(Lww::hlc);
         let status = status.as_ref().map(Lww::hlc);
@@ -230,10 +261,20 @@ impl Task {
         let note = note.as_ref().map(Lww::hlc);
         let due = due.as_ref().map(Lww::hlc);
         let scheduled_at = scheduled_at.as_ref().map(Lww::hlc);
-        [title, status, deleted, priority, note, due, scheduled_at]
-            .into_iter()
-            .flatten()
-            .max()
+        let parent = parent.as_ref().map(Lww::hlc);
+        [
+            title,
+            status,
+            deleted,
+            priority,
+            note,
+            due,
+            scheduled_at,
+            parent,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
     }
 
     /// Field-wise join with another copy of the same task, as received in a
@@ -251,6 +292,7 @@ impl Task {
                 note: join(&a.note, &b.note),
                 due: join(&a.due, &b.due),
                 scheduled_at: join(&a.scheduled_at, &b.scheduled_at),
+                parent: join(&a.parent, &b.parent),
             },
         }
     }
@@ -352,6 +394,18 @@ mod tests {
     }
 
     #[test]
+    fn parent_follows_newest_write_and_can_be_cleared() {
+        let task = Task::empty(ID);
+        assert_eq!(task.parent(), None);
+
+        let task = task.apply(&TaskChange::Parent(Some(TaskId(7))), at(1, A));
+        assert_eq!(task.parent(), Some(TaskId(7)));
+
+        let task = task.apply(&TaskChange::Parent(None), at(2, B));
+        assert_eq!(task.parent(), None);
+    }
+
+    #[test]
     fn priorities_order_from_none_to_high() {
         assert!(TaskPriority::None < TaskPriority::Low);
         assert!(TaskPriority::Low < TaskPriority::Medium);
@@ -423,6 +477,7 @@ mod tests {
             prop::sample::select(vec!["", "x", "y\nz"]).prop_map(|s| TaskChange::Note(note(s))),
             prop::option::of(1u8..4).prop_map(|day| TaskChange::Due(day.map(date))),
             prop::option::of(0u64..3).prop_map(|time| TaskChange::ScheduledAt(time.map(Timestamp))),
+            prop::option::of(0u128..3).prop_map(|id| TaskChange::Parent(id.map(TaskId))),
         ]
     }
 
@@ -452,6 +507,7 @@ mod tests {
             note: Some(Lww::new(note("n"), at(5, B))),
             due: Some(Lww::new(Some(date(1)), at(6, A))),
             scheduled_at: Some(Lww::new(Some(Timestamp(9)), at(7, B))),
+            parent: Some(Lww::new(Some(TaskId(3)), at(8, A))),
         };
 
         let task = Task::from_registers(ID, registers.clone());

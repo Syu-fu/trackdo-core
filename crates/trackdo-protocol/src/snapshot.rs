@@ -43,6 +43,9 @@ pub struct TaskDto {
     /// Unix milliseconds; a `null` value means the task was unscheduled.
     #[serde(default)]
     pub scheduled_at: Option<RegisterDto<Option<u64>>>,
+    /// A `null` value means the task was moved to the top level.
+    #[serde(default)]
+    pub parent: Option<RegisterDto<Option<Uuid>>>,
 }
 
 /// A time entry with every field's register. Times are Unix milliseconds.
@@ -132,6 +135,11 @@ impl From<&Task> for TaskDto {
                     scheduled.map(|Timestamp(scheduled)| scheduled)
                 })
             }),
+            parent: registers.parent.as_ref().map(|reg| {
+                encode(reg, |parent| {
+                    parent.map(|TaskId(parent)| Uuid::from_u128(parent))
+                })
+            }),
         }
     }
 }
@@ -167,6 +175,9 @@ impl TryFrom<TaskDto> for Task {
                 scheduled_at: dto
                     .scheduled_at
                     .map(|reg| decode(reg, |scheduled| scheduled.map(Timestamp))),
+                parent: dto
+                    .parent
+                    .map(|reg| decode(reg, |parent| parent.map(|parent| TaskId(parent.as_u128())))),
             },
         ))
     }
@@ -270,6 +281,7 @@ pub(crate) mod tests {
     fn partial_task() -> Task {
         Task::empty(TaskId(0x0192_8f3a_0000_7000_8000_0000_0000_0002))
             .apply(&TaskChange::Status(TaskStatus::Todo), at(1_730_000_001_000))
+            .apply(&TaskChange::Parent(Some(TASK)), at(1_730_000_001_000))
     }
 
     fn stopped_entry() -> TimeEntry {
@@ -368,6 +380,7 @@ pub(crate) mod tests {
         assert_eq!(task.registers().note, None);
         assert_eq!(task.registers().due, None);
         assert_eq!(task.registers().scheduled_at, None);
+        assert_eq!(task.registers().parent, None);
     }
 
     #[test]
@@ -413,6 +426,7 @@ pub(crate) mod tests {
             "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
             prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
+            prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
         ];
         (
             any::<u128>(),

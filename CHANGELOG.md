@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sent as `YYYY-MM-DD`, so it names the same day wherever the device is.
 - Task scheduled time, set with `Replica::schedule`: an instant in Unix
   milliseconds like time entry times, shown in each device's time zone.
+- Subtasks: a task names its parent as another register, and
+  `hierarchy::Hierarchy` derives the tree every replica shows. A parent that
+  has not arrived yet is ignored, and so is the parent written last in each
+  cycle that offline moves create. A task counts as deleted when any
+  ancestor is deleted, and is restored with it.
 - Stored states written by earlier versions, which lack the new task
   fields, still load.
 

@@ -51,6 +51,8 @@ pub enum TaskChangeDto {
     Due(Option<String>),
     /// Unix milliseconds, or `null` to unschedule.
     ScheduledAt(Option<u64>),
+    /// The parent task's id, or `null` to move the task to the top level.
+    Parent(Option<Uuid>),
 }
 
 /// Times are milliseconds since the Unix epoch, in UTC. `stopped_at: null`
@@ -171,6 +173,9 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::ScheduledAt(scheduled) => {
                 Self::ScheduledAt(scheduled.map(|Timestamp(scheduled)| scheduled))
             }
+            TaskChange::Parent(parent) => {
+                Self::Parent(parent.map(|TaskId(parent)| Uuid::from_u128(parent)))
+            }
         }
     }
 }
@@ -188,6 +193,9 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Due(raw) => Ok(Self::Due(raw.as_deref().map(decode_date).transpose()?)),
             TaskChangeDto::ScheduledAt(scheduled) => {
                 Ok(Self::ScheduledAt(scheduled.map(Timestamp)))
+            }
+            TaskChangeDto::Parent(parent) => {
+                Ok(Self::Parent(parent.map(|parent| TaskId(parent.as_u128()))))
             }
         }
     }
@@ -363,6 +371,18 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn parent_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Parent(Some(TaskId(
+            0x0192_8f3a_0000_7000_8000_0000_0000_0009
+        ))))));
+    }
+
+    #[test]
+    fn top_level_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Parent(None))));
+    }
+
+    #[test]
     fn rejects_invalid_due_date() {
         let json = wire(serde_json::json!({ "field": "due", "value": "2026-02-29" }));
 
@@ -523,6 +543,7 @@ pub(crate) mod tests {
             "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
             prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
+            prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
         ];
         (
             any::<u128>(),

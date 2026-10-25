@@ -63,7 +63,8 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "counter": 0,
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
-      }
+      },
+      "parent": null
     },
     {
       "id": "01928f3a-0000-7000-8000-000000000002",
@@ -80,7 +81,15 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
       "priority": null,
       "note": null,
       "due": null,
-      "scheduled_at": null
+      "scheduled_at": null,
+      "parent": {
+        "value": "01928f3a-0000-7000-8000-000000000001",
+        "hlc": {
+          "wall_ms": 1730000001000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      }
     }
   ],
   "time_entries": [
