@@ -326,6 +326,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -392,6 +398,7 @@ version = "0.3.1"
 dependencies = [
  "proptest",
  "thiserror",
+ "uuid",
 ]
 
 [[package]]
@@ -426,6 +433,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
  "serde_core",
+ "sha1_smol",
 ]
 
 [[package]]

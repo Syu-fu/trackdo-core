@@ -191,7 +191,7 @@ mod tests {
                 OpTarget::TimeEntry {
                     entry_id, change, ..
                 } => Some((*entry_id, change.clone())),
-                OpTarget::Task { .. } => None,
+                OpTarget::Task { .. } | OpTarget::Tag { .. } => None,
             })
             .collect()
     }
@@ -237,6 +237,7 @@ mod tests {
 
         assert!(replica.pending_ops().iter().all(|op| match op.target {
             OpTarget::Task { task_id, .. } | OpTarget::TimeEntry { task_id, .. } => task_id == task,
+            OpTarget::Tag { .. } => false,
         }));
     }
 

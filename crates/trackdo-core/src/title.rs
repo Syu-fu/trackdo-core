@@ -44,7 +44,7 @@ impl Title {
 }
 
 /// Characters Unicode treats as mandatory line breaks.
-fn is_line_break(c: char) -> bool {
+pub(crate) fn is_line_break(c: char) -> bool {
     matches!(
         c,
         '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}'

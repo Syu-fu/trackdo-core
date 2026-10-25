@@ -1,6 +1,7 @@
 //! Operations: the unit of replication between replicas.
 
 use crate::hlc::Hlc;
+use crate::tag::{TagChange, TagId};
 use crate::task::{TaskChange, TaskId};
 use crate::time_entry::{TimeEntryChange, TimeEntryId};
 
@@ -39,6 +40,10 @@ pub enum OpTarget {
         task_id: TaskId,
         change: TimeEntryChange,
     },
+    Tag {
+        tag_id: TagId,
+        change: TagChange,
+    },
 }
 
 impl Op {
@@ -47,6 +52,14 @@ impl Op {
             op_id,
             hlc,
             target: OpTarget::Task { task_id, change },
+        }
+    }
+
+    pub const fn tag(op_id: OpId, tag_id: TagId, hlc: Hlc, change: TagChange) -> Self {
+        Self {
+            op_id,
+            hlc,
+            target: OpTarget::Tag { tag_id, change },
         }
     }
 

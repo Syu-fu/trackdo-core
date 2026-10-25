@@ -6,21 +6,24 @@ use uuid::Uuid;
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Seq};
 use trackdo_core::replica::Snapshot;
+use trackdo_core::tag::Tag;
 use trackdo_core::task::{Task, TaskId, TaskPriority, TaskRegisters, TaskStatus};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
 use crate::date::{decode_date, encode_date};
 use crate::error::{ProtocolError, decode_note, decode_title};
 use crate::op::{HlcDto, TaskPriorityDto, TaskStatusDto};
+use crate::tag::TagDto;
 
-/// All tasks and time entries of the log `log_id` as of `seq`. `seq` is
-/// `null` when the log is still empty.
+/// All tasks, time entries and tags of the log `log_id` as of `seq`. `seq`
+/// is `null` when the log is still empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotDto {
     pub log_id: Uuid,
     pub seq: Option<u64>,
     pub tasks: Vec<TaskDto>,
     pub time_entries: Vec<TimeEntryDto>,
+    pub tags: Vec<TagDto>,
 }
 
 /// A task with every field's register, so receivers can merge it exactly.
@@ -78,6 +81,7 @@ impl From<&Snapshot> for SnapshotDto {
                 .iter()
                 .map(TimeEntryDto::from)
                 .collect(),
+            tags: snapshot.tags.iter().map(TagDto::from).collect(),
         }
     }
 }
@@ -96,6 +100,11 @@ impl TryFrom<SnapshotDto> for Snapshot {
             log_id: LogId(dto.log_id.as_u128()),
             tasks,
             time_entries: dto.time_entries.into_iter().map(TimeEntry::from).collect(),
+            tags: dto
+                .tags
+                .into_iter()
+                .map(Tag::try_from)
+                .collect::<Result<_, _>>()?,
             seq: dto.seq.map(Seq),
         })
     }
@@ -312,6 +321,7 @@ pub(crate) mod tests {
             log_id: LOG,
             tasks: vec![full_task(), partial_task()],
             time_entries: vec![stopped_entry(), running_entry()],
+            tags: vec![crate::tag::tests::work_tag()],
             seq: Some(Seq(42)),
         }));
     }
@@ -322,6 +332,7 @@ pub(crate) mod tests {
             log_id: LOG,
             tasks: Vec::new(),
             time_entries: Vec::new(),
+            tags: Vec::new(),
             seq: None,
         }));
     }
@@ -334,6 +345,7 @@ pub(crate) mod tests {
             log_id: LOG,
             tasks: Vec::new(),
             time_entries: vec![running_entry(), unknown_stop],
+            tags: Vec::new(),
             seq: None,
         };
         let json = serde_json::to_value(SnapshotDto::from(&snapshot)).unwrap();
@@ -353,6 +365,15 @@ pub(crate) mod tests {
     #[test]
     fn rejects_snapshot_without_log_id() {
         let json = serde_json::json!({ "seq": null, "tasks": [], "time_entries": [] });
+
+        assert!(serde_json::from_value::<SnapshotDto>(json).is_err());
+    }
+
+    #[test]
+    fn rejects_snapshot_without_tags() {
+        let json = serde_json::json!({
+            "log_id": LOG_UUID, "seq": null, "tasks": [], "time_entries": [],
+        });
 
         assert!(serde_json::from_value::<SnapshotDto>(json).is_err());
     }
@@ -466,10 +487,11 @@ pub(crate) mod tests {
         fn json_roundtrip_preserves_snapshot(
             tasks in prop::collection::vec(any_task(), 0..5),
             time_entries in prop::collection::vec(any_entry(), 0..5),
+            tags in prop::collection::vec(crate::tag::tests::any_tag(), 0..5),
             log_id in any::<u128>().prop_map(LogId),
             seq in prop::option::of(any::<u64>().prop_map(Seq)),
         ) {
-            let snapshot = Snapshot { log_id, tasks, time_entries, seq };
+            let snapshot = Snapshot { log_id, tasks, time_entries, tags, seq };
             let json = serde_json::to_string(&SnapshotDto::from(&snapshot)).unwrap();
             let dto: SnapshotDto = serde_json::from_str(&json).unwrap();
 

@@ -26,14 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ancestor is deleted, and is restored with it. `Replica::set_parent` moves
   a task and refuses moves that would create a cycle
   (`CommandError::Cycle`), and `Replica::hierarchy` returns the tree.
+- Tags, a new kind of entity with a name and a tombstone, managed with
+  `Replica::create_tag`, `rename_tag` and `delete_tag`. A new tag's id is a
+  UUIDv5 of its name (`TagId::for_name`), so devices creating the same tag
+  offline end up with one; a name whose id a renamed or deleted tag holds
+  gets a fresh id. Creating a tag that exists returns it, and renaming to a
+  name in use fails with `CommandError::TagNameTaken`. Names are compared
+  exactly and are at most 50 characters.
 - Stored states written by earlier versions, which lack the new task
-  fields, still load.
+  fields and tags, still load.
 
 ### Changed
 
 - Deleting a task also stops running timers below it, and timers below a
   task deleted elsewhere are derived to stop when it was deleted. Tasks
   below a deleted task cannot be edited, and their time is not tracked.
+- **Breaking:** `IdGen` has a `tag_id` method, and `Snapshot`,
+  `ReplicaState`, `OpTarget` and their DTOs carry tags. Snapshots on the
+  wire must include `tags`.
 - **Breaking:** `PROTOCOL_VERSION` is 4, as operations may now carry task
   fields that older clients cannot decode.
 - **Breaking:** `Task::from_registers` takes a `TaskRegisters`, and

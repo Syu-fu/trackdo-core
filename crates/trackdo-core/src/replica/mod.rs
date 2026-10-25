@@ -7,6 +7,7 @@
 mod healing;
 mod republish;
 mod subtasks;
+mod tag_commands;
 mod task_commands;
 #[cfg(test)]
 mod test_support;
@@ -22,6 +23,7 @@ use crate::hierarchy::Hierarchy;
 use crate::hlc::{DeviceId, Hlc, HlcError};
 use crate::note::NoteError;
 use crate::op::{LogId, Op, OpId, OpTarget, Seq};
+use crate::tag::{Tag, TagId, TagNameError};
 use crate::task::{Task, TaskChange, TaskId};
 use crate::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 use crate::title::TitleError;
@@ -36,6 +38,14 @@ pub enum CommandError {
     NotFound(TaskId),
     #[error("task {0:?} is deleted")]
     Deleted(TaskId),
+    #[error(transparent)]
+    TagName(#[from] TagNameError),
+    #[error("tag {0:?} does not exist")]
+    TagNotFound(TagId),
+    #[error("tag {0:?} is deleted")]
+    TagDeleted(TagId),
+    #[error("tag {0:?} already has that name")]
+    TagNameTaken(TagId),
     #[error("moving {task:?} under {parent:?} would create a cycle")]
     Cycle { task: TaskId, parent: TaskId },
     #[error("time entry {0:?} does not exist")]
@@ -75,6 +85,7 @@ pub struct ReplicaState {
     pub hlc: Hlc,
     pub tasks: Vec<Task>,
     pub time_entries: Vec<TimeEntry>,
+    pub tags: Vec<Tag>,
     pub pending: Vec<Op>,
     pub log_id: Option<LogId>,
     pub last_seq: Option<Seq>,
@@ -87,6 +98,7 @@ pub struct Snapshot {
     pub log_id: LogId,
     pub tasks: Vec<Task>,
     pub time_entries: Vec<TimeEntry>,
+    pub tags: Vec<Tag>,
     pub seq: Option<Seq>,
 }
 
@@ -96,6 +108,7 @@ pub struct Replica<C, G> {
     hlc: Hlc,
     tasks: BTreeMap<TaskId, Task>,
     entries: BTreeMap<TimeEntryId, TimeEntry>,
+    tags: BTreeMap<TagId, Tag>,
     pending: Vec<Op>,
     log_id: Option<LogId>,
     last_seq: Option<Seq>,
@@ -109,6 +122,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             hlc: Hlc::zero(device),
             tasks: BTreeMap::new(),
             entries: BTreeMap::new(),
+            tags: BTreeMap::new(),
             pending: Vec::new(),
             log_id: None,
             last_seq: None,
@@ -123,6 +137,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             hlc: state.hlc,
             tasks: merge_by_id(state.tasks, Task::id, Task::merge),
             entries: merge_by_id(state.time_entries, TimeEntry::id, TimeEntry::merge),
+            tags: merge_by_id(state.tags, Tag::id, Tag::merge),
             pending: state.pending,
             log_id: state.log_id,
             last_seq: state.last_seq,
@@ -134,6 +149,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             hlc: self.hlc,
             tasks: self.tasks.values().cloned().collect(),
             time_entries: self.entries.values().cloned().collect(),
+            tags: self.tags.values().cloned().collect(),
             pending: self.pending.clone(),
             log_id: self.log_id,
             last_seq: self.last_seq,
@@ -249,7 +265,8 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             .time_entries
             .iter()
             .filter_map(TimeEntry::newest_hlc);
-        let hlc = match task_hlcs.chain(entry_hlcs).max() {
+        let tag_hlcs = snapshot.tags.iter().filter_map(Tag::newest_hlc);
+        let hlc = match task_hlcs.chain(entry_hlcs).chain(tag_hlcs).max() {
             Some(newest) => self.hlc.receive(&newest, self.clock.now_millis())?,
             None => self.hlc,
         };
@@ -263,6 +280,10 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
                 .entry_or_empty(entry.id(), entry.task_id())
                 .merge(entry);
             self.entries.insert(entry.id(), merged);
+        }
+        for tag in &snapshot.tags {
+            let merged = self.tag_or_empty(tag.id()).merge(tag);
+            self.tags.insert(tag.id(), merged);
         }
         self.hlc = hlc;
         if self.log_id == Some(snapshot.log_id) {
@@ -285,6 +306,13 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             .get(&id)
             .cloned()
             .unwrap_or_else(|| Task::empty(id))
+    }
+
+    fn tag_or_empty(&self, id: TagId) -> Tag {
+        self.tags
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| Tag::empty(id))
     }
 
     fn entry_or_empty(&self, id: TimeEntryId, task_id: TaskId) -> TimeEntry {
@@ -331,6 +359,10 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             } => {
                 let updated = self.entry_or_empty(*entry_id, *task_id).apply(change, hlc);
                 self.entries.insert(*entry_id, updated);
+            }
+            OpTarget::Tag { tag_id, change } => {
+                let updated = self.tag_or_empty(*tag_id).apply(change, hlc);
+                self.tags.insert(*tag_id, updated);
             }
         }
     }
@@ -529,6 +561,7 @@ mod tests {
             log_id: LOG,
             tasks,
             time_entries: Vec::new(),
+            tags: Vec::new(),
             seq,
         }
     }
@@ -554,6 +587,7 @@ mod tests {
                 ),
                 snapshot_entry(500, task, NOW, TimeEntryChange::StartedAt(Timestamp(300))),
             ],
+            tags: Vec::new(),
             seq: Some(Seq(10)),
         };
 
@@ -585,6 +619,7 @@ mod tests {
                 NOW,
                 TimeEntryChange::Deleted(true),
             )],
+            tags: Vec::new(),
             seq: Some(Seq(10)),
         };
 
@@ -616,6 +651,7 @@ mod tests {
                     Hlc::new(future, 0, OTHER),
                 ),
             ],
+            tags: Vec::new(),
             seq: Some(Seq(1)),
         };
         replica.apply_snapshot(&snapshot).unwrap();
@@ -788,6 +824,7 @@ mod tests {
                 NOW,
                 TimeEntryChange::Deleted(true),
             )],
+            tags: Vec::new(),
             seq: Some(Seq(1)),
         };
 

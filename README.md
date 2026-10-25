@@ -32,9 +32,9 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
 ```
 
 - **Conflict resolution** – each field of a task (`title`, `status`,
-  `deleted`, `priority`, `note`, `due`, `scheduled_at`) and of a time entry
-  (`started_at`, `stopped_at`, `deleted`) is an independent last-writer-wins
-  register ordered by a
+  `deleted`, `priority`, `note`, `due`, `scheduled_at`, `parent`), of a time
+  entry (`started_at`, `stopped_at`, `deleted`) and of a tag (`name`,
+  `deleted`) is an independent last-writer-wins register ordered by a
   [Hybrid Logical Clock](https://cse.buffalo.edu/tech-reports/2014-04.pdf).
   Concurrent edits to different fields are both kept, and merging is
   commutative, associative and idempotent.
@@ -44,8 +44,12 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
   offline may form a cycle, so every replica derives the same tree by
   ignoring the parent written last in each cycle. Deleting a task deletes
   everything below it.
-- **No create operation** – a task or time entry comes into existence when
-  the first write for its id arrives, so operations may arrive in any order.
+- **Tags** – tags are entities of their own whose id is derived from the
+  name they were created with, so a tag created on two devices offline
+  becomes one.
+- **No create operation** – a task, time entry or tag comes into existence
+  when the first write for its id arrives, so operations may arrive in any
+  order.
 - **Delivery** – the server orders operations with a per-user sequence number.
   Clients resume the event stream from their last `seq`, and fall back to a
   full snapshot when the log no longer reaches back that far. Each log has a

@@ -1,6 +1,6 @@
 ---
 source: crates/trackdo-protocol/src/snapshot.rs
-expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_task(), partial_task()], time_entries:\n    vec![stopped_entry(), running_entry()], seq: Some(Seq(42)),\n})"
+expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_task(), partial_task()], time_entries:\n    vec![stopped_entry(), running_entry()], tags:\n    vec![crate::tag::tests::work_tag()], seq: Some(Seq(42)),\n})"
 ---
 {
   "log_id": "01928f30-0000-7000-8000-000000000001",
@@ -136,6 +136,20 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
         "value": null,
         "hlc": {
           "wall_ms": 1730000400000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
+      "deleted": null
+    }
+  ],
+  "tags": [
+    {
+      "id": "dc59ba82-d0ee-5fec-b8e2-c6935ec3ee03",
+      "name": {
+        "value": "work",
+        "hlc": {
+          "wall_ms": 1730000000000,
           "counter": 0,
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }

@@ -5,11 +5,13 @@ use uuid::Uuid;
 
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::op::{Op, OpId, OpTarget};
+use trackdo_core::tag::{TagChange, TagId};
 use trackdo_core::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
 use trackdo_core::time_entry::{TimeEntryChange, TimeEntryId, Timestamp};
 
 use crate::date::{decode_date, encode_date};
 use crate::error::{ProtocolError, decode_note, decode_title};
+use crate::tag::TagChangeDto;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpDto {
@@ -29,6 +31,10 @@ pub enum OpTargetDto {
         entry_id: Uuid,
         task_id: Uuid,
         change: TimeEntryChangeDto,
+    },
+    Tag {
+        tag_id: Uuid,
+        change: TagChangeDto,
     },
 }
 
@@ -119,6 +125,10 @@ impl From<&OpTarget> for OpTargetDto {
                 task_id: Uuid::from_u128(task_id.0),
                 change: TimeEntryChangeDto::from(change),
             },
+            OpTarget::Tag { tag_id, change } => Self::Tag {
+                tag_id: Uuid::from_u128(tag_id.0),
+                change: TagChangeDto::from(change),
+            },
         }
     }
 }
@@ -140,6 +150,10 @@ impl TryFrom<OpTargetDto> for OpTarget {
                 entry_id: TimeEntryId(entry_id.as_u128()),
                 task_id: TaskId(task_id.as_u128()),
                 change: TimeEntryChange::from(change),
+            }),
+            OpTargetDto::Tag { tag_id, change } => Ok(Self::Tag {
+                tag_id: TagId(tag_id.as_u128()),
+                change: TagChange::try_from(change)?,
             }),
         }
     }

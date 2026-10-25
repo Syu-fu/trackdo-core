@@ -6,6 +6,7 @@ use super::{Replica, Snapshot};
 use crate::env::{Clock, IdGen};
 use crate::hlc::Hlc;
 use crate::op::{Op, OpTarget};
+use crate::tag::Tag;
 use crate::task::Task;
 use crate::time_entry::TimeEntry;
 
@@ -20,6 +21,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         let missing: Vec<(OpTarget, Hlc)> = self
             .missing_task_writes(&snapshot.tasks)
             .chain(self.missing_entry_writes(&snapshot.time_entries))
+            .chain(self.missing_tag_writes(&snapshot.tags))
             .filter(|(target, hlc)| {
                 !self
                     .pending
@@ -44,6 +46,21 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
                 .map(|(change, hlc)| {
                     let task_id = task.id();
                     (OpTarget::Task { task_id, change }, hlc)
+                })
+        })
+    }
+
+    fn missing_tag_writes(&self, snapshot: &[Tag]) -> impl Iterator<Item = (OpTarget, Hlc)> {
+        let known: BTreeMap<_, _> = snapshot.iter().map(|tag| (tag.id(), tag)).collect();
+        self.tags.values().flat_map(move |tag| {
+            let held = known
+                .get(&tag.id())
+                .map_or_else(|| Tag::empty(tag.id()), |&tag| tag.clone());
+            tag.writes()
+                .filter(move |(change, hlc)| held.apply(change, *hlc) != held)
+                .map(|(change, hlc)| {
+                    let tag_id = tag.id();
+                    (OpTarget::Tag { tag_id, change }, hlc)
                 })
         })
     }
@@ -79,6 +96,7 @@ mod tests {
     use super::super::test_support::*;
     use crate::hlc::Hlc;
     use crate::op::{LogId, Op, OpId, OpTarget, Seq};
+    use crate::tag::{Tag, TagChange, TagId, TagName};
     use crate::task::{Task, TaskChange, TaskId, TaskStatus};
     use crate::time_entry::{TimeEntry, TimeEntryChange, TimeEntryId, Timestamp};
 
@@ -90,6 +108,7 @@ mod tests {
             log_id,
             tasks,
             time_entries,
+            tags: Vec::new(),
             seq: None,
         }
     }
@@ -130,6 +149,34 @@ mod tests {
 
         assert_eq!(writes(&replica), vec![(renamed.target, renamed.hlc)]);
         assert_ne!(replica.pending_ops()[0].op_id, renamed.op_id);
+    }
+
+    #[test]
+    fn republishes_tag_writes_a_replaced_log_lacks() {
+        let named = Op::tag(
+            OpId(900),
+            TagId(7),
+            Hlc::new(NOW - 10, 0, OTHER),
+            TagChange::Name(TagName::new("work").unwrap()),
+        );
+        let deleted = Op::tag(
+            OpId(901),
+            TagId(7),
+            Hlc::new(NOW - 5, 0, OTHER),
+            TagChange::Deleted(true),
+        );
+        let mut replica = synced(&[named.clone(), deleted.clone()]);
+        let restored = Snapshot {
+            tags: vec![
+                Tag::empty(TagId(7))
+                    .apply(&TagChange::Name(TagName::new("work").unwrap()), named.hlc),
+            ],
+            ..snapshot(RESTORED, Vec::new(), Vec::new())
+        };
+
+        replica.apply_snapshot(&restored).unwrap();
+
+        assert_eq!(writes(&replica), vec![(deleted.target, deleted.hlc)]);
     }
 
     #[test]

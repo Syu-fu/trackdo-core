@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use trackdo_core::date::DateError;
 use trackdo_core::note::{Note, NoteError};
+use trackdo_core::tag::{TagName, TagNameError};
 use trackdo_core::title::{Title, TitleError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -23,6 +24,11 @@ pub enum ProtocolError {
     InvalidDate(#[from] DateError),
     #[error("date is not `YYYY-MM-DD`")]
     InvalidDateFormat,
+    #[error("invalid tag name: {0}")]
+    InvalidTagName(#[from] TagNameError),
+    /// Tag names are not normalized on receipt either.
+    #[error("tag name is not in canonical form")]
+    NonCanonicalTagName,
     #[error("event id is not `<log_id>:<seq>`")]
     InvalidEventId,
 }
@@ -41,4 +47,12 @@ pub(crate) fn decode_note(raw: &str) -> Result<Note, ProtocolError> {
         return Err(ProtocolError::NonCanonicalNote);
     }
     Ok(note)
+}
+
+pub(crate) fn decode_tag_name(raw: &str) -> Result<TagName, ProtocolError> {
+    let name = TagName::new(raw)?;
+    if name.as_str() != raw {
+        return Err(ProtocolError::NonCanonicalTagName);
+    }
+    Ok(name)
 }

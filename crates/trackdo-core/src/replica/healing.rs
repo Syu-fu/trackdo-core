@@ -191,6 +191,7 @@ mod tests {
                 log_id: LOG,
                 tasks: vec![deleted],
                 time_entries: Vec::new(),
+                tags: Vec::new(),
                 seq: Some(Seq(5)),
             })
             .unwrap();

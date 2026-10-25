@@ -10,6 +10,7 @@ readme = "../../README.md"
 
 [dependencies]
 thiserror.workspace = true
+uuid = { workspace = true, features = ["v5"] }
 
 [dev-dependencies]
 proptest.workspace = true

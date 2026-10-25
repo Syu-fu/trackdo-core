@@ -4,6 +4,7 @@ use super::Replica;
 use crate::env::{Clock, IdGen};
 use crate::hlc::DeviceId;
 use crate::op::{LogId, OpId, OpTarget};
+use crate::tag::TagId;
 use crate::task::{TaskChange, TaskId};
 use crate::time_entry::TimeEntryId;
 use crate::title::Title;
@@ -35,6 +36,11 @@ impl IdGen for SequentialIds {
         TimeEntryId(self.0)
     }
 
+    fn tag_id(&mut self) -> TagId {
+        self.0 += 1;
+        TagId(self.0)
+    }
+
     fn op_id(&mut self) -> OpId {
         self.0 += 1;
         OpId(self.0)
@@ -62,7 +68,7 @@ pub(super) fn changes(replica: &TestReplica) -> Vec<TaskChange> {
         .iter()
         .filter_map(|op| match &op.target {
             OpTarget::Task { change, .. } => Some(change.clone()),
-            OpTarget::TimeEntry { .. } => None,
+            OpTarget::TimeEntry { .. } | OpTarget::Tag { .. } => None,
         })
         .collect()
 }

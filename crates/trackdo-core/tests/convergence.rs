@@ -15,6 +15,7 @@ use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Op, OpId, OpTarget, Seq};
 use trackdo_core::replica::{CommandError, Replica, Snapshot};
+use trackdo_core::tag::{Tag, TagId};
 use trackdo_core::task::{Task, TaskId, TaskPriority};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
@@ -52,6 +53,10 @@ impl IdGen for DeviceIds {
 
     fn time_entry_id(&mut self) -> TimeEntryId {
         TimeEntryId(self.fresh())
+    }
+
+    fn tag_id(&mut self) -> TagId {
+        TagId(self.fresh())
     }
 
     fn op_id(&mut self) -> OpId {
@@ -95,12 +100,13 @@ impl Server {
     }
 
     fn snapshot(&self) -> Snapshot {
-        let (tasks, time_entries) = replay_log(self);
+        let (tasks, time_entries, tags) = replay_log(self);
         let seq = (!self.log.is_empty()).then_some(Seq(self.log.len() as u64));
         Snapshot {
             log_id: self.log_id,
             tasks,
             time_entries,
+            tags,
             seq,
         }
     }
@@ -162,7 +168,8 @@ impl Node {
         let snapshot = server.snapshot();
         let task_hlcs = snapshot.tasks.iter().flat_map(task_hlcs);
         let entry_hlcs = snapshot.time_entries.iter().flat_map(entry_hlcs);
-        let observed: Vec<Hlc> = task_hlcs.chain(entry_hlcs).collect();
+        let tag_hlcs = snapshot.tags.iter().flat_map(tag_hlcs);
+        let observed: Vec<Hlc> = task_hlcs.chain(entry_hlcs).chain(tag_hlcs).collect();
         self.emitting(
             |replica| replica.apply_snapshot(&snapshot).unwrap(),
             observed,
@@ -171,6 +178,10 @@ impl Node {
 
     fn pick_task(&self, index: usize) -> Option<TaskId> {
         pick(self.replica.tasks().map(Task::id), index)
+    }
+
+    fn pick_tag(&self, index: usize) -> Option<TagId> {
+        pick(self.replica.tags().map(Tag::id), index)
     }
 
     fn pick_entry(&self, index: usize) -> Option<TimeEntryId> {
@@ -266,17 +277,19 @@ impl Node {
     fn held_hlcs(&self) -> impl Iterator<Item = Hlc> + '_ {
         let tasks = self.replica.tasks().flat_map(task_hlcs);
         let entries = self.replica.time_entries().flat_map(entry_hlcs);
-        tasks.chain(entries)
+        let tags = self.replica.tags().flat_map(tag_hlcs);
+        tasks.chain(entries).chain(tags)
     }
 
     fn observe(&mut self, hlc: Hlc) {
         self.max_seen = self.max_seen.max(Some(hlc));
     }
 
-    fn snapshot(&self) -> (Vec<Task>, Vec<TimeEntry>) {
+    fn snapshot(&self) -> (Vec<Task>, Vec<TimeEntry>, Vec<Tag>) {
         (
             self.replica.tasks().cloned().collect(),
             self.replica.time_entries().cloned().collect(),
+            self.replica.tags().cloned().collect(),
         )
     }
 
@@ -352,6 +365,9 @@ enum Edit {
     DeleteEntry(usize),
     /// Two instants before now; the earlier one becomes the start.
     AddEntry(usize, u64, u64),
+    CreateTag(String),
+    RenameTag(usize, String),
+    DeleteTag(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +387,11 @@ enum Action {
 
 fn title() -> impl Strategy<Value = String> {
     prop::sample::select(vec!["milk", "eggs", "bread", "call mom", "牛乳"]).prop_map(String::from)
+}
+
+/// Few names, so devices create the same tag and renames collide.
+fn tag_name() -> impl Strategy<Value = String> {
+    prop::sample::select(vec!["work", "home", "errand"]).prop_map(String::from)
 }
 
 fn priority() -> impl Strategy<Value = TaskPriority> {
@@ -403,6 +424,9 @@ fn edit() -> impl Strategy<Value = Edit> {
             .prop_map(|(i, start, stop)| Edit::SetTimes(i, start, stop)),
         1 => i().prop_map(Edit::DeleteEntry),
         1 => (i(), ago(), ago()).prop_map(|(i, a, b)| Edit::AddEntry(i, a, b)),
+        1 => tag_name().prop_map(Edit::CreateTag),
+        1 => (i(), tag_name()).prop_map(|(i, name)| Edit::RenameTag(i, name)),
+        1 => i().prop_map(Edit::DeleteTag),
     ]
 }
 
@@ -423,8 +447,12 @@ fn action() -> impl Strategy<Value = Action> {
 fn run_edit(node: &mut Node, edit: &Edit) {
     let task = node.pick_task(edit_index(edit));
     let entry = node.pick_entry(edit_index(edit));
+    let tag = node.pick_tag(edit_index(edit));
     let result = match edit {
         Edit::Create(title) => node.emitting(|r| r.create(title).map(drop), []),
+        Edit::CreateTag(name) => node.emitting(|r| r.create_tag(name).map(drop), []),
+        Edit::RenameTag(_, name) => on(node, tag, |r, id| r.rename_tag(id, name)),
+        Edit::DeleteTag(_) => on(node, tag, Replica::delete_tag),
         Edit::Rename(_, title) => on(node, task, |r, id| r.rename(id, title)),
         Edit::Complete(_) => on(node, task, Replica::complete),
         Edit::Reopen(_) => on(node, task, Replica::reopen),
@@ -463,7 +491,9 @@ fn run_edit(node: &mut Node, edit: &Edit) {
             | CommandError::EntryDeleted(_)
             | CommandError::NotRunning(_)
             | CommandError::StopBeforeStart { .. }
-            | CommandError::Cycle { .. },
+            | CommandError::Cycle { .. }
+            | CommandError::TagDeleted(_)
+            | CommandError::TagNameTaken(_),
         ) => {}
         // An entry may arrive before its task does.
         Err(CommandError::NotFound(_))
@@ -477,7 +507,7 @@ fn run_edit(node: &mut Node, edit: &Edit) {
 
 fn edit_index(edit: &Edit) -> usize {
     match edit {
-        Edit::Create(_) => 0,
+        Edit::Create(_) | Edit::CreateTag(_) => 0,
         Edit::Rename(i, _)
         | Edit::Complete(i)
         | Edit::Reopen(i)
@@ -491,7 +521,9 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::Stop(i)
         | Edit::SetTimes(i, ..)
         | Edit::DeleteEntry(i)
-        | Edit::AddEntry(i, ..) => *i,
+        | Edit::AddEntry(i, ..)
+        | Edit::RenameTag(i, _)
+        | Edit::DeleteTag(i) => *i,
     }
 }
 
@@ -569,10 +601,20 @@ fn entry_hlcs(entry: &TimeEntry) -> impl Iterator<Item = Hlc> {
     .flatten()
 }
 
+fn tag_hlcs(tag: &Tag) -> impl Iterator<Item = Hlc> {
+    [
+        tag.registers().name.as_ref().map(Lww::hlc),
+        tag.registers().deleted.as_ref().map(Lww::hlc),
+    ]
+    .into_iter()
+    .flatten()
+}
+
 /// State obtained by applying the server log, in order, to nothing.
-fn replay_log(server: &Server) -> (Vec<Task>, Vec<TimeEntry>) {
+fn replay_log(server: &Server) -> (Vec<Task>, Vec<TimeEntry>, Vec<Tag>) {
     let mut tasks = BTreeMap::new();
     let mut entries = BTreeMap::new();
+    let mut tags = BTreeMap::new();
     for op in &server.log {
         match &op.target {
             OpTarget::Task { task_id, change } => {
@@ -591,11 +633,16 @@ fn replay_log(server: &Server) -> (Vec<Task>, Vec<TimeEntry>) {
                     .unwrap_or_else(|| TimeEntry::empty(*entry_id, *task_id));
                 entries.insert(*entry_id, entry.apply(change, op.hlc));
             }
+            OpTarget::Tag { tag_id, change } => {
+                let tag = tags.remove(tag_id).unwrap_or_else(|| Tag::empty(*tag_id));
+                tags.insert(*tag_id, tag.apply(change, op.hlc));
+            }
         }
     }
     (
         tasks.into_values().collect(),
         entries.into_values().collect(),
+        tags.into_values().collect(),
     )
 }
 

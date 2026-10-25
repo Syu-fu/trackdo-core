@@ -9,12 +9,14 @@ use uuid::Uuid;
 
 use trackdo_core::op::{LogId, Op, Seq};
 use trackdo_core::replica::ReplicaState;
+use trackdo_core::tag::Tag;
 use trackdo_core::task::Task;
 use trackdo_core::time_entry::TimeEntry;
 
 use crate::error::ProtocolError;
 use crate::op::{HlcDto, OpDto};
 use crate::snapshot::{TaskDto, TimeEntryDto};
+use crate::tag::TagDto;
 
 /// Everything needed to restore a replica, including its device id in
 /// `hlc.device`.
@@ -23,6 +25,9 @@ pub struct ReplicaStateDto {
     pub hlc: HlcDto,
     pub tasks: Vec<TaskDto>,
     pub time_entries: Vec<TimeEntryDto>,
+    /// Missing in states stored before tags existed.
+    #[serde(default)]
+    pub tags: Vec<TagDto>,
     pub pending: Vec<OpDto>,
     pub log_id: Option<Uuid>,
     pub last_seq: Option<u64>,
@@ -34,6 +39,7 @@ impl From<&ReplicaState> for ReplicaStateDto {
             hlc: HlcDto::from(state.hlc),
             tasks: state.tasks.iter().map(TaskDto::from).collect(),
             time_entries: state.time_entries.iter().map(TimeEntryDto::from).collect(),
+            tags: state.tags.iter().map(TagDto::from).collect(),
             pending: state.pending.iter().map(OpDto::from).collect(),
             log_id: state.log_id.map(|LogId(id)| Uuid::from_u128(id)),
             last_seq: state.last_seq.map(|Seq(seq)| seq),
@@ -54,6 +60,11 @@ impl TryFrom<ReplicaStateDto> for ReplicaState {
                 .map(Task::try_from)
                 .collect::<Result<_, _>>()?,
             time_entries: dto.time_entries.into_iter().map(TimeEntry::from).collect(),
+            tags: dto
+                .tags
+                .into_iter()
+                .map(Tag::try_from)
+                .collect::<Result<_, _>>()?,
             pending: dto
                 .pending
                 .into_iter()
@@ -94,6 +105,7 @@ mod tests {
             hlc: Hlc::new(1_730_000_500_000, 0, DEVICE),
             tasks: vec![full_task()],
             time_entries: vec![running_entry()],
+            tags: vec![crate::tag::tests::work_tag()],
             pending: vec![pending_op()],
             log_id: Some(LogId(0x0192_8f30_0000_7000_8000_0000_0000_0001)),
             last_seq: Some(Seq(42)),
@@ -111,10 +123,21 @@ mod tests {
             hlc: Hlc::zero(DEVICE),
             tasks: Vec::new(),
             time_entries: Vec::new(),
+            tags: Vec::new(),
             pending: Vec::new(),
             log_id: None,
             last_seq: None,
         }));
+    }
+
+    /// States stored before tags existed must still load.
+    #[test]
+    fn accepts_state_without_tags() {
+        let mut json = serde_json::to_value(ReplicaStateDto::from(&state())).unwrap();
+        json.as_object_mut().unwrap().remove("tags");
+        let dto: ReplicaStateDto = serde_json::from_value(json).unwrap();
+
+        assert_eq!(ReplicaState::try_from(dto).unwrap().tags, Vec::new());
     }
 
     #[test]
@@ -149,11 +172,15 @@ mod tests {
             hlc in any_hlc(),
             tasks in prop::collection::vec(any_task(), 0..5),
             time_entries in prop::collection::vec(any_entry(), 0..5),
-            pending in prop::collection::vec(prop_oneof![any_task_op(), any_entry_op()], 0..5),
+            tags in prop::collection::vec(crate::tag::tests::any_tag(), 0..5),
+            pending in prop::collection::vec(
+                prop_oneof![any_task_op(), any_entry_op(), crate::tag::tests::any_tag_op()],
+                0..5,
+            ),
             log_id in prop::option::of(any::<u128>().prop_map(LogId)),
             last_seq in prop::option::of(any::<u64>().prop_map(Seq)),
         ) {
-            let state = ReplicaState { hlc, tasks, time_entries, pending, log_id, last_seq };
+            let state = ReplicaState { hlc, tasks, time_entries, tags, pending, log_id, last_seq };
             let json = serde_json::to_string(&ReplicaStateDto::from(&state)).unwrap();
             let dto: ReplicaStateDto = serde_json::from_str(&json).unwrap();
 

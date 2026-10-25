@@ -1,6 +1,7 @@
 //! Environment capabilities injected by the host, keeping the core free of I/O.
 
 use crate::op::OpId;
+use crate::tag::TagId;
 use crate::task::TaskId;
 use crate::time_entry::TimeEntryId;
 
@@ -14,5 +15,8 @@ pub trait Clock {
 pub trait IdGen {
     fn task_id(&mut self) -> TaskId;
     fn time_entry_id(&mut self) -> TimeEntryId;
+    /// For a tag whose name-derived id is taken; see
+    /// [`TagId::for_name`].
+    fn tag_id(&mut self) -> TagId;
     fn op_id(&mut self) -> OpId;
 }
