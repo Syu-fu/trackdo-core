@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::Replica;
 use crate::env::{Clock, IdGen};
-use crate::task::{Task, TaskId};
+use crate::task::TaskId;
 use crate::time_entry::{TimeEntry, Timestamp};
 use crate::tracking::{TimeEntryView, derived_stops};
 
@@ -28,25 +28,22 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     }
 
     /// Entries that count towards reports: not deleted and not belonging to
-    /// a deleted task. Ordered by start time.
+    /// a task that counts as deleted. Ordered by start time.
     pub fn tracked_entries(&self) -> Vec<TimeEntryView<'_>> {
-        self.views(|entry| !self.is_task_deleted(entry.task_id()))
+        let tree = self.hierarchy();
+        self.views(|entry| !tree.is_deleted(entry.task_id()))
     }
 
     /// Total time spent on `task_id`, counting a running timer up to `now`.
-    /// Zero for a deleted task.
+    /// Zero for a task that counts as deleted.
     pub fn task_total(&self, task_id: TaskId, now: Timestamp) -> Duration {
-        if self.is_task_deleted(task_id) {
+        if self.hierarchy().is_deleted(task_id) {
             return Duration::ZERO;
         }
         self.entries_for(task_id)
             .iter()
             .map(|view| view.duration(now))
             .sum()
-    }
-
-    fn is_task_deleted(&self, task_id: TaskId) -> bool {
-        self.tasks.get(&task_id).is_some_and(Task::is_deleted)
     }
 
     /// Views of non-deleted entries that `keep`, ordered by start time.

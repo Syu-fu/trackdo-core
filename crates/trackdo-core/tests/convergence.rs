@@ -300,10 +300,10 @@ impl Node {
             running.len() <= 1,
             "several timers shown running: {running:?}"
         );
+        let tree = self.replica.hierarchy();
         for view in running {
-            let task = self.replica.task(view.task_id());
             assert!(
-                !task.is_some_and(Task::is_deleted),
+                !tree.is_deleted(view.task_id()),
                 "timer shown on deleted task"
             );
         }
@@ -320,10 +320,10 @@ impl Node {
             running.len() <= 1,
             "several timers stored running: {running:?}"
         );
+        let tree = self.replica.hierarchy();
         for entry in running {
-            let task = self.replica.task(entry.task_id());
             assert!(
-                !task.is_some_and(Task::is_deleted),
+                !tree.is_deleted(entry.task_id()),
                 "timer stored on deleted task"
             );
         }
@@ -338,6 +338,8 @@ enum Edit {
     Reopen(usize),
     Delete(usize),
     SetPriority(usize, TaskPriority),
+    /// The second index picks the new parent; `None` moves to the top level.
+    Move(usize, Option<usize>),
     SetNote(usize, String),
     /// Day of October 2026, or `None` to clear the due date.
     SetDue(usize, Option<u8>),
@@ -390,6 +392,7 @@ fn edit() -> impl Strategy<Value = Edit> {
         1 => i().prop_map(Edit::Reopen),
         1 => i().prop_map(Edit::Delete),
         1 => (i(), priority()).prop_map(|(i, p)| Edit::SetPriority(i, p)),
+        3 => (i(), prop::option::of(i())).prop_map(|(i, parent)| Edit::Move(i, parent)),
         1 => (i(), prop::sample::select(vec!["", "call first", "a\nb"]))
             .prop_map(|(i, n)| Edit::SetNote(i, n.to_owned())),
         1 => (i(), prop::option::of(1u8..4)).prop_map(|(i, day)| Edit::SetDue(i, day)),
@@ -427,6 +430,11 @@ fn run_edit(node: &mut Node, edit: &Edit) {
         Edit::Reopen(_) => on(node, task, Replica::reopen),
         Edit::Delete(_) => on(node, task, Replica::delete),
         Edit::SetPriority(_, priority) => on(node, task, |r, id| r.set_priority(id, *priority)),
+        Edit::Move(_, parent) => match parent.map(|index| node.pick_task(index)) {
+            Some(None) => Ok(()),
+            Some(Some(parent)) => on(node, task, |r, id| r.set_parent(id, Some(parent))),
+            None => on(node, task, |r, id| r.set_parent(id, None)),
+        },
         Edit::SetNote(_, note) => on(node, task, |r, id| r.set_note(id, note)),
         Edit::Schedule(_, ahead) => {
             let at = ahead.map(|ahead| Timestamp(node.ago(0).0 + ahead));
@@ -454,7 +462,8 @@ fn run_edit(node: &mut Node, edit: &Edit) {
             CommandError::Deleted(_)
             | CommandError::EntryDeleted(_)
             | CommandError::NotRunning(_)
-            | CommandError::StopBeforeStart { .. },
+            | CommandError::StopBeforeStart { .. }
+            | CommandError::Cycle { .. },
         ) => {}
         // An entry may arrive before its task does.
         Err(CommandError::NotFound(_))
@@ -474,6 +483,7 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::Reopen(i)
         | Edit::Delete(i)
         | Edit::SetPriority(i, _)
+        | Edit::Move(i, _)
         | Edit::SetNote(i, _)
         | Edit::SetDue(i, _)
         | Edit::Schedule(i, _)

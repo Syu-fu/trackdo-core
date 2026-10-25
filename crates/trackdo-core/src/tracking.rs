@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use crate::hierarchy::Hierarchy;
 use crate::task::{Task, TaskId};
 use crate::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
@@ -73,20 +74,21 @@ impl<'a> TimeEntryView<'a> {
 ///
 /// - When several entries run, the one started last wins (ties broken by
 ///   id) and the others stop when it started.
-/// - An entry running on a deleted task stops when the task was deleted, or
-///   at its own start if that is later.
+/// - An entry running on a deleted task, or below one, stops when the task
+///   came to count as deleted, or at its own start if that is later.
 ///
 /// Deleted entries are ignored.
 pub(crate) fn derived_stops(
     tasks: &BTreeMap<TaskId, Task>,
     entries: &BTreeMap<TimeEntryId, TimeEntry>,
 ) -> BTreeMap<TimeEntryId, Timestamp> {
+    let tree = Hierarchy::derive(tasks);
     let running: Vec<_> = entries
         .values()
         .filter(|entry| !entry.is_deleted() && entry.is_running())
         .filter_map(|entry| {
             let started = entry.started_at()?;
-            Some((entry.id(), started, deleted_at(tasks, entry.task_id())))
+            Some((entry.id(), started, tree.deleted_at(entry.task_id())))
         })
         .collect();
 
@@ -105,13 +107,6 @@ pub(crate) fn derived_stops(
             .map(move |&(_, id)| (id, winner_start))
     });
     orphan_stops.chain(loser_stops).collect()
-}
-
-/// When the task was deleted, by the wall time of its deletion.
-fn deleted_at(tasks: &BTreeMap<TaskId, Task>, task_id: TaskId) -> Option<Timestamp> {
-    let task = tasks.get(&task_id).filter(|task| task.is_deleted())?;
-    let register = task.registers().deleted.as_ref()?;
-    Some(Timestamp(register.hlc().wall_ms()))
 }
 
 #[cfg(test)]
@@ -196,6 +191,16 @@ mod tests {
         let entries = by_id([entry(1, GONE, 100, None)]);
 
         assert_eq!(derived_stops(&tasks(250), &entries), stops(&[(1, 250)]));
+    }
+
+    #[test]
+    fn running_entry_under_deleted_ancestor_stops_at_its_deletion() {
+        let mut tasks = tasks(250);
+        let child = Task::empty(TaskId(3)).apply(&TaskChange::Parent(Some(GONE)), at(1));
+        tasks.insert(TaskId(3), child);
+        let entries = by_id([entry(1, TaskId(3), 100, None)]);
+
+        assert_eq!(derived_stops(&tasks, &entries), stops(&[(1, 250)]));
     }
 
     #[test]

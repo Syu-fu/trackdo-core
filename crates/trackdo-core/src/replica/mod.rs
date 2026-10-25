@@ -6,6 +6,7 @@
 
 mod healing;
 mod republish;
+mod subtasks;
 mod task_commands;
 #[cfg(test)]
 mod test_support;
@@ -17,6 +18,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::env::{Clock, IdGen};
+use crate::hierarchy::Hierarchy;
 use crate::hlc::{DeviceId, Hlc, HlcError};
 use crate::note::NoteError;
 use crate::op::{LogId, Op, OpId, OpTarget, Seq};
@@ -34,6 +36,8 @@ pub enum CommandError {
     NotFound(TaskId),
     #[error("task {0:?} is deleted")]
     Deleted(TaskId),
+    #[error("moving {task:?} under {parent:?} would create a cycle")]
+    Cycle { task: TaskId, parent: TaskId },
     #[error("time entry {0:?} does not exist")]
     EntryNotFound(TimeEntryId),
     #[error("time entry {0:?} is deleted")]
@@ -143,6 +147,12 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     /// All known tasks, including deleted ones, ordered by id.
     pub fn tasks(&self) -> impl Iterator<Item = &Task> {
         self.tasks.values()
+    }
+
+    /// The tree tasks form, as it should be shown. Derived from all tasks on
+    /// each call, so callers should reuse it while rendering.
+    pub fn hierarchy(&self) -> Hierarchy {
+        Hierarchy::derive(&self.tasks)
     }
 
     pub fn time_entry(&self, id: TimeEntryId) -> Option<&TimeEntry> {
@@ -284,12 +294,15 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             .unwrap_or_else(|| TimeEntry::empty(id, task_id))
     }
 
+    /// The task exists and neither it nor any ancestor is deleted.
     fn ensure_editable(&self, id: TaskId) -> Result<(), CommandError> {
-        match self.tasks.get(&id) {
-            None => Err(CommandError::NotFound(id)),
-            Some(task) if task.is_deleted() => Err(CommandError::Deleted(id)),
-            Some(_) => Ok(()),
+        if !self.tasks.contains_key(&id) {
+            return Err(CommandError::NotFound(id));
         }
+        if self.hierarchy().is_deleted(id) {
+            return Err(CommandError::Deleted(id));
+        }
+        Ok(())
     }
 
     /// An entry's task never changes, so remote data claiming otherwise is

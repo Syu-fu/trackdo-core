@@ -40,6 +40,10 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
   commutative, associative and idempotent.
 - **Deletion wins** – deletion is a tombstone that edits to other fields never
   clear.
+- **Subtasks** – each task names its parent in a register too. Moves made
+  offline may form a cycle, so every replica derives the same tree by
+  ignoring the parent written last in each cycle. Deleting a task deletes
+  everything below it.
 - **No create operation** – a task or time entry comes into existence when
   the first write for its id arrives, so operations may arrive in any order.
 - **Delivery** – the server orders operations with a per-user sequence number.

@@ -23,12 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hierarchy::Hierarchy` derives the tree every replica shows. A parent that
   has not arrived yet is ignored, and so is the parent written last in each
   cycle that offline moves create. A task counts as deleted when any
-  ancestor is deleted, and is restored with it.
+  ancestor is deleted, and is restored with it. `Replica::set_parent` moves
+  a task and refuses moves that would create a cycle
+  (`CommandError::Cycle`), and `Replica::hierarchy` returns the tree.
 - Stored states written by earlier versions, which lack the new task
   fields, still load.
 
 ### Changed
 
+- Deleting a task also stops running timers below it, and timers below a
+  task deleted elsewhere are derived to stop when it was deleted. Tasks
+  below a deleted task cannot be edited, and their time is not tracked.
 - **Breaking:** `PROTOCOL_VERSION` is 4, as operations may now carry task
   fields that older clients cannot decode.
 - **Breaking:** `Task::from_registers` takes a `TaskRegisters`, and

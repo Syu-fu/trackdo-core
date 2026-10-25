@@ -65,14 +65,31 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.emit_task(id, vec![TaskChange::ScheduledAt(at)])
     }
 
-    /// Also stops the task's running timer.
+    /// Deletes the task together with every task below it, stopping their
+    /// running timers.
     pub fn delete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.stop_timer_and_emit(id, TaskChange::Deleted(true))
+        self.delete_subtree(id)
     }
 
     fn stop_timer_and_emit(&mut self, id: TaskId, change: TaskChange) -> Result<(), CommandError> {
         let stops = self.stop_running(self.now(), |entry| entry.task_id() == id);
+        self.emit_with_stops(stops, id, change)
+    }
+
+    /// Also stops running timers of the task and of every task below it.
+    fn delete_subtree(&mut self, id: TaskId) -> Result<(), CommandError> {
+        let tree = self.hierarchy();
+        let stops = self.stop_running(self.now(), |entry| tree.is_within(entry.task_id(), id));
+        self.emit_with_stops(stops, id, TaskChange::Deleted(true))
+    }
+
+    fn emit_with_stops(
+        &mut self,
+        stops: Vec<OpTarget>,
+        id: TaskId,
+        change: TaskChange,
+    ) -> Result<(), CommandError> {
         let task = OpTarget::Task {
             task_id: id,
             change,
