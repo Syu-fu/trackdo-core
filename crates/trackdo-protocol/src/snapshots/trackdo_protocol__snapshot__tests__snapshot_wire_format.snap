@@ -39,6 +39,14 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "counter": 0,
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
+      },
+      "note": {
+        "value": "oat milk if out",
+        "hlc": {
+          "wall_ms": 1730000000990,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
       }
     },
     {
@@ -53,7 +61,8 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
         }
       },
       "deleted": null,
-      "priority": null
+      "priority": null,
+      "note": null
     }
   ],
   "time_entries": [

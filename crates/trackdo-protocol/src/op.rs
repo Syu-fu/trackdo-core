@@ -8,7 +8,7 @@ use trackdo_core::op::{Op, OpId, OpTarget};
 use trackdo_core::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
 use trackdo_core::time_entry::{TimeEntryChange, TimeEntryId, Timestamp};
 
-use crate::error::{ProtocolError, decode_title};
+use crate::error::{ProtocolError, decode_note, decode_title};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpDto {
@@ -45,6 +45,7 @@ pub enum TaskChangeDto {
     Status(TaskStatusDto),
     Deleted(bool),
     Priority(TaskPriorityDto),
+    Note(String),
 }
 
 /// Times are milliseconds since the Unix epoch, in UTC. `stopped_at: null`
@@ -160,6 +161,7 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::Status(status) => Self::Status(TaskStatusDto::from(*status)),
             TaskChange::Deleted(deleted) => Self::Deleted(*deleted),
             TaskChange::Priority(priority) => Self::Priority(TaskPriorityDto::from(*priority)),
+            TaskChange::Note(note) => Self::Note(note.as_str().to_owned()),
         }
     }
 }
@@ -173,6 +175,7 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Status(status) => Ok(Self::Status(TaskStatus::from(status))),
             TaskChangeDto::Deleted(deleted) => Ok(Self::Deleted(deleted)),
             TaskChangeDto::Priority(priority) => Ok(Self::Priority(TaskPriority::from(priority))),
+            TaskChangeDto::Note(raw) => Ok(Self::Note(decode_note(&raw)?)),
         }
     }
 }
@@ -243,6 +246,7 @@ impl From<TaskPriorityDto> for TaskPriority {
 pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
+    use trackdo_core::note::Note;
     use trackdo_core::title::{Title, TitleError};
 
     fn op(change: TaskChange) -> Op {
@@ -301,6 +305,28 @@ pub(crate) mod tests {
     #[test]
     fn priority_op_wire_format() {
         insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Priority(TaskPriority::Medium))));
+    }
+
+    #[test]
+    fn note_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Note(
+            Note::new("ask for\nthe receipt").unwrap()
+        ))));
+    }
+
+    #[test]
+    fn rejects_non_canonical_note() {
+        let json = wire(serde_json::json!({ "field": "note", "value": "a\r\nb" }));
+
+        assert_eq!(decode(json), Err(ProtocolError::NonCanonicalNote));
+    }
+
+    #[test]
+    fn rejects_too_long_note() {
+        let long = "a".repeat(trackdo_core::note::MAX_NOTE_CHARS + 1);
+        let json = wire(serde_json::json!({ "field": "note", "value": long }));
+
+        assert!(matches!(decode(json), Err(ProtocolError::InvalidNote(_))));
     }
 
     #[test]
@@ -454,6 +480,7 @@ pub(crate) mod tests {
                 TaskPriority::High,
             ])
             .prop_map(TaskChange::Priority),
+            "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
         ];
         (
             any::<u128>(),

@@ -18,6 +18,7 @@ use thiserror::Error;
 
 use crate::env::{Clock, IdGen};
 use crate::hlc::{DeviceId, Hlc, HlcError};
+use crate::note::NoteError;
 use crate::op::{LogId, Op, OpId, OpTarget, Seq};
 use crate::task::{Task, TaskChange, TaskId};
 use crate::time_entry::{TimeEntry, TimeEntryId, Timestamp};
@@ -27,6 +28,8 @@ use crate::title::TitleError;
 pub enum CommandError {
     #[error(transparent)]
     Title(#[from] TitleError),
+    #[error(transparent)]
+    Note(#[from] NoteError),
     #[error("task {0:?} does not exist")]
     NotFound(TaskId),
     #[error("task {0:?} is deleted")]

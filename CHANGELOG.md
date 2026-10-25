@@ -10,13 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Task priority (`none`, `low`, `medium`, `high`), set with
-  `Replica::set_priority`. Stored states without it still load.
+  `Replica::set_priority`.
+- Task note, set with `Replica::set_note`: multi-line text of up to 10,000
+  characters, where concurrent edits keep the newest one as a whole. Line
+  breaks are normalized to `\n` and trailing whitespace is dropped; an empty
+  note removes it.
+- Stored states written by earlier versions, which lack the new task
+  fields, still load.
 
 ### Changed
 
 - **Breaking:** `PROTOCOL_VERSION` is 4, as operations may now carry task
   fields that older clients cannot decode.
-
 - **Breaking:** `Task::from_registers` takes a `TaskRegisters`, and
   `Task::registers` replaces the `*_register` accessors, so adding a task
   field no longer changes every caller.

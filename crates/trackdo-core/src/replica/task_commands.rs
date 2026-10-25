@@ -2,6 +2,7 @@
 
 use super::{CommandError, Replica};
 use crate::env::{Clock, IdGen};
+use crate::note::Note;
 use crate::op::OpTarget;
 use crate::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
 use crate::title::Title;
@@ -42,6 +43,13 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.emit_task(id, vec![TaskChange::Priority(priority)])
     }
 
+    /// An empty or whitespace-only note removes the note.
+    pub fn set_note(&mut self, id: TaskId, note: &str) -> Result<(), CommandError> {
+        self.ensure_editable(id)?;
+        let note = Note::new(note)?;
+        self.emit_task(id, vec![TaskChange::Note(note)])
+    }
+
     /// Also stops the task's running timer.
     pub fn delete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
@@ -62,6 +70,7 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
 mod tests {
     use super::super::test_support::*;
     use super::*;
+    use crate::note::{MAX_NOTE_CHARS, NoteError};
     use crate::title::TitleError;
 
     #[test]
@@ -176,6 +185,40 @@ mod tests {
     }
 
     #[test]
+    fn set_note_updates_and_clears_note() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+
+        replica.set_note(id, "ask for\r\nthe receipt \n").unwrap();
+        assert_eq!(
+            replica.task(id).unwrap().note().map(Note::as_str),
+            Some("ask for\nthe receipt")
+        );
+
+        replica.set_note(id, "  ").unwrap();
+        assert_eq!(replica.task(id).unwrap().note(), None);
+        assert_eq!(
+            changes(&replica).last(),
+            Some(&TaskChange::Note(Note::default()))
+        );
+    }
+
+    #[test]
+    fn set_note_rejects_too_long_note() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        let pending_before = replica.pending_ops().len();
+
+        let result = replica.set_note(id, &"a".repeat(MAX_NOTE_CHARS + 1));
+
+        assert!(matches!(
+            result,
+            Err(CommandError::Note(NoteError::TooLong { .. }))
+        ));
+        assert_eq!(replica.pending_ops().len(), pending_before);
+    }
+
+    #[test]
     fn delete_marks_task_as_deleted() {
         let mut replica = replica();
         let id = replica.create("a").unwrap();
@@ -211,6 +254,10 @@ mod tests {
             replica.set_priority(unknown, TaskPriority::Low),
             Err(CommandError::NotFound(unknown))
         );
+        assert_eq!(
+            replica.set_note(unknown, "a"),
+            Err(CommandError::NotFound(unknown))
+        );
         assert!(replica.pending_ops().is_empty());
     }
 
@@ -229,6 +276,7 @@ mod tests {
             replica.set_priority(id, TaskPriority::Low),
             Err(CommandError::Deleted(id))
         );
+        assert_eq!(replica.set_note(id, "a"), Err(CommandError::Deleted(id)));
         assert_eq!(replica.pending_ops().len(), pending_before);
     }
 }

@@ -3,6 +3,7 @@
 pub mod env;
 pub mod hlc;
 pub mod lww;
+pub mod note;
 pub mod op;
 pub mod replica;
 pub mod task;

@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use trackdo_core::note::{Note, NoteError};
 use trackdo_core::title::{Title, TitleError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -12,6 +13,11 @@ pub enum ProtocolError {
     /// normalized on receipt.
     #[error("title is not in canonical form")]
     NonCanonicalTitle,
+    #[error("invalid note: {0}")]
+    InvalidNote(#[from] NoteError),
+    /// Notes are not normalized on receipt either.
+    #[error("note is not in canonical form")]
+    NonCanonicalNote,
     #[error("event id is not `<log_id>:<seq>`")]
     InvalidEventId,
 }
@@ -22,4 +28,12 @@ pub(crate) fn decode_title(raw: &str) -> Result<Title, ProtocolError> {
         return Err(ProtocolError::NonCanonicalTitle);
     }
     Ok(title)
+}
+
+pub(crate) fn decode_note(raw: &str) -> Result<Note, ProtocolError> {
+    let note = Note::new(raw)?;
+    if note.as_str() != raw {
+        return Err(ProtocolError::NonCanonicalNote);
+    }
+    Ok(note)
 }

@@ -9,7 +9,7 @@ use trackdo_core::replica::Snapshot;
 use trackdo_core::task::{Task, TaskId, TaskPriority, TaskRegisters, TaskStatus};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
-use crate::error::{ProtocolError, decode_title};
+use crate::error::{ProtocolError, decode_note, decode_title};
 use crate::op::{HlcDto, TaskPriorityDto, TaskStatusDto};
 
 /// All tasks and time entries of the log `log_id` as of `seq`. `seq` is
@@ -34,6 +34,8 @@ pub struct TaskDto {
     pub deleted: Option<RegisterDto<bool>>,
     #[serde(default)]
     pub priority: Option<RegisterDto<TaskPriorityDto>>,
+    #[serde(default)]
+    pub note: Option<RegisterDto<String>>,
 }
 
 /// A time entry with every field's register. Times are Unix milliseconds.
@@ -110,6 +112,10 @@ impl From<&Task> for TaskDto {
                 .priority
                 .as_ref()
                 .map(|reg| encode(reg, |priority| TaskPriorityDto::from(*priority))),
+            note: registers
+                .note
+                .as_ref()
+                .map(|reg| encode(reg, |note| note.as_str().to_owned())),
         }
     }
 }
@@ -122,6 +128,10 @@ impl TryFrom<TaskDto> for Task {
             .title
             .map(|reg| Ok::<_, ProtocolError>(Lww::new(decode_title(&reg.value)?, reg.hlc.into())))
             .transpose()?;
+        let note = dto
+            .note
+            .map(|reg| Ok::<_, ProtocolError>(Lww::new(decode_note(&reg.value)?, reg.hlc.into())))
+            .transpose()?;
         Ok(Self::from_registers(
             TaskId(dto.id.as_u128()),
             TaskRegisters {
@@ -129,6 +139,7 @@ impl TryFrom<TaskDto> for Task {
                 status: dto.status.map(|reg| decode(reg, TaskStatus::from)),
                 deleted: dto.deleted.map(|reg| decode(reg, |deleted| deleted)),
                 priority: dto.priority.map(|reg| decode(reg, TaskPriority::from)),
+                note,
             },
         ))
     }
@@ -187,6 +198,7 @@ pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
     use trackdo_core::hlc::{DeviceId, Hlc};
+    use trackdo_core::note::Note;
     use trackdo_core::task::TaskChange;
     use trackdo_core::time_entry::TimeEntryChange;
     use trackdo_core::title::Title;
@@ -212,6 +224,10 @@ pub(crate) mod tests {
             .apply(
                 &TaskChange::Priority(TaskPriority::High),
                 at(1_730_000_000_950),
+            )
+            .apply(
+                &TaskChange::Note(Note::new("oat milk if out").unwrap()),
+                at(1_730_000_000_990),
             )
     }
 
@@ -300,9 +316,9 @@ pub(crate) mod tests {
         assert!(serde_json::from_value::<SnapshotDto>(json).is_err());
     }
 
-    /// Stored states written before priorities existed must still load.
+    /// Stored states written before v0.4 must still load.
     #[test]
-    fn accepts_task_without_priority() {
+    fn accepts_task_without_fields_added_later() {
         let json = serde_json::json!({
             "id": "01928f3a-0000-7000-8000-000000000001",
             "title": null,
@@ -313,6 +329,18 @@ pub(crate) mod tests {
         let task = Task::try_from(serde_json::from_value::<TaskDto>(json).unwrap()).unwrap();
 
         assert_eq!(task.registers().priority, None);
+        assert_eq!(task.registers().note, None);
+    }
+
+    #[test]
+    fn rejects_non_canonical_note_register() {
+        let mut dto = TaskDto::from(&full_task());
+        dto.note = Some(RegisterDto {
+            value: "oat milk ".to_owned(),
+            hlc: HlcDto::from(at(1)),
+        });
+
+        assert_eq!(Task::try_from(dto), Err(ProtocolError::NonCanonicalNote));
     }
 
     #[test]
@@ -344,6 +372,7 @@ pub(crate) mod tests {
                 TaskPriority::High,
             ])
             .prop_map(TaskChange::Priority),
+            "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
         ];
         (
             any::<u128>(),

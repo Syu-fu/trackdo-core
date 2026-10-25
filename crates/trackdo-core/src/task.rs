@@ -2,6 +2,7 @@
 
 use crate::hlc::Hlc;
 use crate::lww::{Lww, join, write};
+use crate::note::Note;
 use crate::title::Title;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,6 +30,7 @@ pub enum TaskChange {
     Status(TaskStatus),
     Deleted(bool),
     Priority(TaskPriority),
+    Note(Note),
 }
 
 /// The register of every task field. Each is `None` until its first write
@@ -40,6 +42,7 @@ pub struct TaskRegisters {
     pub status: Option<Lww<TaskStatus>>,
     pub deleted: Option<Lww<bool>>,
     pub priority: Option<Lww<TaskPriority>>,
+    pub note: Option<Lww<Note>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +61,7 @@ impl Task {
                 status: None,
                 deleted: None,
                 priority: None,
+                note: None,
             },
         }
     }
@@ -94,6 +98,15 @@ impl Task {
             .map_or(TaskPriority::None, |priority| *priority.value())
     }
 
+    /// `None` while no note or only an empty one has been written.
+    pub fn note(&self) -> Option<&Note> {
+        self.registers
+            .note
+            .as_ref()
+            .map(Lww::value)
+            .filter(|note| !note.is_empty())
+    }
+
     /// Deletion is a tombstone: edits to other fields never clear it.
     pub fn is_deleted(&self) -> bool {
         self.registers
@@ -122,6 +135,10 @@ impl Task {
                 priority: Some(write(&current.priority, *priority, hlc)),
                 ..current.clone()
             },
+            TaskChange::Note(note) => TaskRegisters {
+                note: Some(write(&current.note, note.clone(), hlc)),
+                ..current.clone()
+            },
         };
         Self {
             id: self.id,
@@ -136,6 +153,7 @@ impl Task {
             status,
             deleted,
             priority,
+            note,
         } = &self.registers;
         let title = title
             .as_ref()
@@ -149,7 +167,12 @@ impl Task {
         let priority = priority
             .as_ref()
             .map(|priority| (TaskChange::Priority(*priority.value()), priority.hlc()));
-        [title, status, deleted, priority].into_iter().flatten()
+        let note = note
+            .as_ref()
+            .map(|note| (TaskChange::Note(note.value().clone()), note.hlc()));
+        [title, status, deleted, priority, note]
+            .into_iter()
+            .flatten()
     }
 
     /// Timestamp of the most recent write to any field.
@@ -159,12 +182,14 @@ impl Task {
             status,
             deleted,
             priority,
+            note,
         } = &self.registers;
         let title = title.as_ref().map(Lww::hlc);
         let status = status.as_ref().map(Lww::hlc);
         let deleted = deleted.as_ref().map(Lww::hlc);
         let priority = priority.as_ref().map(Lww::hlc);
-        title.max(status).max(deleted).max(priority)
+        let note = note.as_ref().map(Lww::hlc);
+        title.max(status).max(deleted).max(priority).max(note)
     }
 
     /// Field-wise join with another copy of the same task, as received in a
@@ -179,6 +204,7 @@ impl Task {
                 status: join(&a.status, &b.status),
                 deleted: join(&a.deleted, &b.deleted),
                 priority: join(&a.priority, &b.priority),
+                note: join(&a.note, &b.note),
             },
         }
     }
@@ -196,6 +222,10 @@ mod tests {
 
     fn title(s: &str) -> Title {
         Title::new(s).unwrap()
+    }
+
+    fn note(s: &str) -> Note {
+        Note::new(s).unwrap()
     }
 
     fn at(wall: u64, device: DeviceId) -> Hlc {
@@ -234,6 +264,17 @@ mod tests {
             .apply(&TaskChange::Priority(TaskPriority::Low), at(1, B));
 
         assert_eq!(task.priority(), TaskPriority::High);
+    }
+
+    #[test]
+    fn note_follows_newest_write_and_empty_means_none() {
+        let task = Task::empty(ID).apply(&TaskChange::Note(note("call first")), at(1, A));
+        assert_eq!(task.note(), Some(&note("call first")));
+
+        let task = task.apply(&TaskChange::Note(Note::default()), at(2, A));
+
+        assert_eq!(task.note(), None);
+        assert!(task.registers().note.is_some());
     }
 
     #[test]
@@ -305,6 +346,7 @@ mod tests {
                 TaskPriority::High,
             ])
             .prop_map(TaskChange::Priority),
+            prop::sample::select(vec!["", "x", "y\nz"]).prop_map(|s| TaskChange::Note(note(s))),
         ]
     }
 
@@ -331,6 +373,7 @@ mod tests {
             status: Some(status_reg),
             deleted: Some(deleted_reg),
             priority: Some(Lww::new(TaskPriority::High, at(4, A))),
+            note: Some(Lww::new(note("n"), at(5, B))),
         };
 
         let task = Task::from_registers(ID, registers.clone());

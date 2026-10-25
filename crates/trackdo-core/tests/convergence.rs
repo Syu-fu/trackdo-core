@@ -337,6 +337,7 @@ enum Edit {
     Reopen(usize),
     Delete(usize),
     SetPriority(usize, TaskPriority),
+    SetNote(usize, String),
     Start(usize),
     Stop(usize),
     /// Start and optional stop, as milliseconds before now.
@@ -384,6 +385,8 @@ fn edit() -> impl Strategy<Value = Edit> {
         1 => i().prop_map(Edit::Reopen),
         1 => i().prop_map(Edit::Delete),
         1 => (i(), priority()).prop_map(|(i, p)| Edit::SetPriority(i, p)),
+        1 => (i(), prop::sample::select(vec!["", "call first", "a\nb"]))
+            .prop_map(|(i, n)| Edit::SetNote(i, n.to_owned())),
         3 => i().prop_map(Edit::Start),
         1 => i().prop_map(Edit::Stop),
         1 => (i(), ago(), prop::option::of(ago()))
@@ -417,6 +420,7 @@ fn run_edit(node: &mut Node, edit: &Edit) {
         Edit::Reopen(_) => on(node, task, Replica::reopen),
         Edit::Delete(_) => on(node, task, Replica::delete),
         Edit::SetPriority(_, priority) => on(node, task, |r, id| r.set_priority(id, *priority)),
+        Edit::SetNote(_, note) => on(node, task, |r, id| r.set_note(id, note)),
         Edit::Start(_) => on(node, task, |r, id| r.start(id).map(drop)),
         Edit::Stop(_) => on(node, entry, Replica::stop),
         Edit::SetTimes(_, start, stop) => {
@@ -455,6 +459,7 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::Reopen(i)
         | Edit::Delete(i)
         | Edit::SetPriority(i, _)
+        | Edit::SetNote(i, _)
         | Edit::Start(i)
         | Edit::Stop(i)
         | Edit::SetTimes(i, ..)
@@ -518,6 +523,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
         task.registers().status.as_ref().map(Lww::hlc),
         task.registers().deleted.as_ref().map(Lww::hlc),
         task.registers().priority.as_ref().map(Lww::hlc),
+        task.registers().note.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()
