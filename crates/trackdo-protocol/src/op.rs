@@ -49,6 +49,8 @@ pub enum TaskChangeDto {
     Note(String),
     /// `YYYY-MM-DD`, or `null` to clear the due date.
     Due(Option<String>),
+    /// Unix milliseconds, or `null` to unschedule.
+    ScheduledAt(Option<u64>),
 }
 
 /// Times are milliseconds since the Unix epoch, in UTC. `stopped_at: null`
@@ -166,6 +168,9 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::Priority(priority) => Self::Priority(TaskPriorityDto::from(*priority)),
             TaskChange::Note(note) => Self::Note(note.as_str().to_owned()),
             TaskChange::Due(due) => Self::Due(due.map(encode_date)),
+            TaskChange::ScheduledAt(scheduled) => {
+                Self::ScheduledAt(scheduled.map(|Timestamp(scheduled)| scheduled))
+            }
         }
     }
 }
@@ -181,6 +186,9 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Priority(priority) => Ok(Self::Priority(TaskPriority::from(priority))),
             TaskChangeDto::Note(raw) => Ok(Self::Note(decode_note(&raw)?)),
             TaskChangeDto::Due(raw) => Ok(Self::Due(raw.as_deref().map(decode_date).transpose()?)),
+            TaskChangeDto::ScheduledAt(scheduled) => {
+                Ok(Self::ScheduledAt(scheduled.map(Timestamp)))
+            }
         }
     }
 }
@@ -348,6 +356,13 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn scheduled_at_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::ScheduledAt(Some(Timestamp(
+            1_730_100_000_000
+        ))))));
+    }
+
+    #[test]
     fn rejects_invalid_due_date() {
         let json = wire(serde_json::json!({ "field": "due", "value": "2026-02-29" }));
 
@@ -507,6 +522,7 @@ pub(crate) mod tests {
             .prop_map(TaskChange::Priority),
             "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
+            prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
         ];
         (
             any::<u128>(),

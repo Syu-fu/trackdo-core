@@ -40,6 +40,9 @@ pub struct TaskDto {
     /// A `null` value means the due date was cleared.
     #[serde(default)]
     pub due: Option<RegisterDto<Option<String>>>,
+    /// Unix milliseconds; a `null` value means the task was unscheduled.
+    #[serde(default)]
+    pub scheduled_at: Option<RegisterDto<Option<u64>>>,
 }
 
 /// A time entry with every field's register. Times are Unix milliseconds.
@@ -124,6 +127,11 @@ impl From<&Task> for TaskDto {
                 .due
                 .as_ref()
                 .map(|reg| encode(reg, |due| due.map(encode_date))),
+            scheduled_at: registers.scheduled_at.as_ref().map(|reg| {
+                encode(reg, |scheduled| {
+                    scheduled.map(|Timestamp(scheduled)| scheduled)
+                })
+            }),
         }
     }
 }
@@ -156,6 +164,9 @@ impl TryFrom<TaskDto> for Task {
                 priority: dto.priority.map(|reg| decode(reg, TaskPriority::from)),
                 note,
                 due,
+                scheduled_at: dto
+                    .scheduled_at
+                    .map(|reg| decode(reg, |scheduled| scheduled.map(Timestamp))),
             },
         ))
     }
@@ -249,6 +260,10 @@ pub(crate) mod tests {
             .apply(
                 &TaskChange::Due(Some(Date::new(2024, 10, 31).unwrap())),
                 at(1_730_000_000_995),
+            )
+            .apply(
+                &TaskChange::ScheduledAt(Some(Timestamp(1_730_100_000_000))),
+                at(1_730_000_000_999),
             )
     }
 
@@ -352,6 +367,7 @@ pub(crate) mod tests {
         assert_eq!(task.registers().priority, None);
         assert_eq!(task.registers().note, None);
         assert_eq!(task.registers().due, None);
+        assert_eq!(task.registers().scheduled_at, None);
     }
 
     #[test]
@@ -396,6 +412,7 @@ pub(crate) mod tests {
             .prop_map(TaskChange::Priority),
             "([a-z]{1,8}\n?){0,3}[a-z]".prop_map(|s| TaskChange::Note(Note::new(&s).unwrap())),
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
+            prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
         ];
         (
             any::<u128>(),

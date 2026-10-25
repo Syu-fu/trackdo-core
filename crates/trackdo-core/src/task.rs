@@ -4,6 +4,7 @@ use crate::date::Date;
 use crate::hlc::Hlc;
 use crate::lww::{Lww, join, write};
 use crate::note::Note;
+use crate::time_entry::Timestamp;
 use crate::title::Title;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -34,6 +35,8 @@ pub enum TaskChange {
     Note(Note),
     /// `None` clears the due date.
     Due(Option<Date>),
+    /// When the task is planned to be worked on; `None` unschedules it.
+    ScheduledAt(Option<Timestamp>),
 }
 
 /// The register of every task field. Each is `None` until its first write
@@ -47,6 +50,7 @@ pub struct TaskRegisters {
     pub priority: Option<Lww<TaskPriority>>,
     pub note: Option<Lww<Note>>,
     pub due: Option<Lww<Option<Date>>>,
+    pub scheduled_at: Option<Lww<Option<Timestamp>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +71,7 @@ impl Task {
                 priority: None,
                 note: None,
                 due: None,
+                scheduled_at: None,
             },
         }
     }
@@ -116,6 +121,13 @@ impl Task {
         self.registers.due.as_ref().and_then(|due| *due.value())
     }
 
+    pub fn scheduled_at(&self) -> Option<Timestamp> {
+        self.registers
+            .scheduled_at
+            .as_ref()
+            .and_then(|scheduled| *scheduled.value())
+    }
+
     /// Deletion is a tombstone: edits to other fields never clear it.
     pub fn is_deleted(&self) -> bool {
         self.registers
@@ -152,6 +164,10 @@ impl Task {
                 due: Some(write(&current.due, *due, hlc)),
                 ..current.clone()
             },
+            TaskChange::ScheduledAt(scheduled) => TaskRegisters {
+                scheduled_at: Some(write(&current.scheduled_at, *scheduled, hlc)),
+                ..current.clone()
+            },
         };
         Self {
             id: self.id,
@@ -168,6 +184,7 @@ impl Task {
             priority,
             note,
             due,
+            scheduled_at,
         } = &self.registers;
         let title = title
             .as_ref()
@@ -187,7 +204,10 @@ impl Task {
         let due = due
             .as_ref()
             .map(|due| (TaskChange::Due(*due.value()), due.hlc()));
-        [title, status, deleted, priority, note, due]
+        let scheduled_at = scheduled_at
+            .as_ref()
+            .map(|scheduled| (TaskChange::ScheduledAt(*scheduled.value()), scheduled.hlc()));
+        [title, status, deleted, priority, note, due, scheduled_at]
             .into_iter()
             .flatten()
     }
@@ -201,6 +221,7 @@ impl Task {
             priority,
             note,
             due,
+            scheduled_at,
         } = &self.registers;
         let title = title.as_ref().map(Lww::hlc);
         let status = status.as_ref().map(Lww::hlc);
@@ -208,7 +229,8 @@ impl Task {
         let priority = priority.as_ref().map(Lww::hlc);
         let note = note.as_ref().map(Lww::hlc);
         let due = due.as_ref().map(Lww::hlc);
-        [title, status, deleted, priority, note, due]
+        let scheduled_at = scheduled_at.as_ref().map(Lww::hlc);
+        [title, status, deleted, priority, note, due, scheduled_at]
             .into_iter()
             .flatten()
             .max()
@@ -228,6 +250,7 @@ impl Task {
                 priority: join(&a.priority, &b.priority),
                 note: join(&a.note, &b.note),
                 due: join(&a.due, &b.due),
+                scheduled_at: join(&a.scheduled_at, &b.scheduled_at),
             },
         }
     }
@@ -317,6 +340,18 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_time_follows_newest_write_and_can_be_cleared() {
+        let task = Task::empty(ID);
+        assert_eq!(task.scheduled_at(), None);
+
+        let task = task.apply(&TaskChange::ScheduledAt(Some(Timestamp(900))), at(1, A));
+        assert_eq!(task.scheduled_at(), Some(Timestamp(900)));
+
+        let task = task.apply(&TaskChange::ScheduledAt(None), at(2, B));
+        assert_eq!(task.scheduled_at(), None);
+    }
+
+    #[test]
     fn priorities_order_from_none_to_high() {
         assert!(TaskPriority::None < TaskPriority::Low);
         assert!(TaskPriority::Low < TaskPriority::Medium);
@@ -387,6 +422,7 @@ mod tests {
             .prop_map(TaskChange::Priority),
             prop::sample::select(vec!["", "x", "y\nz"]).prop_map(|s| TaskChange::Note(note(s))),
             prop::option::of(1u8..4).prop_map(|day| TaskChange::Due(day.map(date))),
+            prop::option::of(0u64..3).prop_map(|time| TaskChange::ScheduledAt(time.map(Timestamp))),
         ]
     }
 
@@ -415,6 +451,7 @@ mod tests {
             priority: Some(Lww::new(TaskPriority::High, at(4, A))),
             note: Some(Lww::new(note("n"), at(5, B))),
             due: Some(Lww::new(Some(date(1)), at(6, A))),
+            scheduled_at: Some(Lww::new(Some(Timestamp(9)), at(7, B))),
         };
 
         let task = Task::from_registers(ID, registers.clone());

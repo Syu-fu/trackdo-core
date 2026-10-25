@@ -341,6 +341,8 @@ enum Edit {
     SetNote(usize, String),
     /// Day of October 2026, or `None` to clear the due date.
     SetDue(usize, Option<u8>),
+    /// Milliseconds from now, or `None` to clear the scheduled time.
+    Schedule(usize, Option<u64>),
     Start(usize),
     Stop(usize),
     /// Start and optional stop, as milliseconds before now.
@@ -391,6 +393,7 @@ fn edit() -> impl Strategy<Value = Edit> {
         1 => (i(), prop::sample::select(vec!["", "call first", "a\nb"]))
             .prop_map(|(i, n)| Edit::SetNote(i, n.to_owned())),
         1 => (i(), prop::option::of(1u8..4)).prop_map(|(i, day)| Edit::SetDue(i, day)),
+        1 => (i(), prop::option::of(ago())).prop_map(|(i, ahead)| Edit::Schedule(i, ahead)),
         3 => i().prop_map(Edit::Start),
         1 => i().prop_map(Edit::Stop),
         1 => (i(), ago(), prop::option::of(ago()))
@@ -425,6 +428,10 @@ fn run_edit(node: &mut Node, edit: &Edit) {
         Edit::Delete(_) => on(node, task, Replica::delete),
         Edit::SetPriority(_, priority) => on(node, task, |r, id| r.set_priority(id, *priority)),
         Edit::SetNote(_, note) => on(node, task, |r, id| r.set_note(id, note)),
+        Edit::Schedule(_, ahead) => {
+            let at = ahead.map(|ahead| Timestamp(node.ago(0).0 + ahead));
+            on(node, task, |r, id| r.schedule(id, at))
+        }
         Edit::SetDue(_, day) => {
             let due = day.map(|day| Date::new(2026, 10, day).unwrap());
             on(node, task, |r, id| r.set_due(id, due))
@@ -469,6 +476,7 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::SetPriority(i, _)
         | Edit::SetNote(i, _)
         | Edit::SetDue(i, _)
+        | Edit::Schedule(i, _)
         | Edit::Start(i)
         | Edit::Stop(i)
         | Edit::SetTimes(i, ..)
@@ -534,6 +542,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> {
         task.registers().priority.as_ref().map(Lww::hlc),
         task.registers().note.as_ref().map(Lww::hlc),
         task.registers().due.as_ref().map(Lww::hlc),
+        task.registers().scheduled_at.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()

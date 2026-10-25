@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note removes it.
 - Task due date, set with `Replica::set_due`: a `Date` without a time zone,
   sent as `YYYY-MM-DD`, so it names the same day wherever the device is.
+- Task scheduled time, set with `Replica::schedule`: an instant in Unix
+  milliseconds like time entry times, shown in each device's time zone.
 - Stored states written by earlier versions, which lack the new task
   fields, still load.
 

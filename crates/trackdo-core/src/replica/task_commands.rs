@@ -6,6 +6,7 @@ use crate::env::{Clock, IdGen};
 use crate::note::Note;
 use crate::op::OpTarget;
 use crate::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
+use crate::time_entry::Timestamp;
 use crate::title::Title;
 
 impl<C: Clock, G: IdGen> Replica<C, G> {
@@ -55,6 +56,13 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn set_due(&mut self, id: TaskId, due: Option<Date>) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
         self.emit_task(id, vec![TaskChange::Due(due)])
+    }
+
+    /// Plans the task for `at`, which may be in the past; `None` unschedules
+    /// it.
+    pub fn schedule(&mut self, id: TaskId, at: Option<Timestamp>) -> Result<(), CommandError> {
+        self.ensure_editable(id)?;
+        self.emit_task(id, vec![TaskChange::ScheduledAt(at)])
     }
 
     /// Also stops the task's running timer.
@@ -225,6 +233,23 @@ mod tests {
     }
 
     #[test]
+    fn schedule_sets_and_clears_scheduled_time() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        let at = Timestamp(NOW + 3_600_000);
+
+        replica.schedule(id, Some(at)).unwrap();
+        assert_eq!(replica.task(id).unwrap().scheduled_at(), Some(at));
+
+        replica.schedule(id, None).unwrap();
+        assert_eq!(replica.task(id).unwrap().scheduled_at(), None);
+        assert_eq!(
+            changes(&replica).last(),
+            Some(&TaskChange::ScheduledAt(None))
+        );
+    }
+
+    #[test]
     fn set_note_rejects_too_long_note() {
         let mut replica = replica();
         let id = replica.create("a").unwrap();
@@ -283,6 +308,10 @@ mod tests {
             replica.set_due(unknown, None),
             Err(CommandError::NotFound(unknown))
         );
+        assert_eq!(
+            replica.schedule(unknown, None),
+            Err(CommandError::NotFound(unknown))
+        );
         assert!(replica.pending_ops().is_empty());
     }
 
@@ -303,6 +332,7 @@ mod tests {
         );
         assert_eq!(replica.set_note(id, "a"), Err(CommandError::Deleted(id)));
         assert_eq!(replica.set_due(id, None), Err(CommandError::Deleted(id)));
+        assert_eq!(replica.schedule(id, None), Err(CommandError::Deleted(id)));
         assert_eq!(replica.pending_ops().len(), pending_before);
     }
 }
