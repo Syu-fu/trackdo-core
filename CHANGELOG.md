@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-01
+
 ### Added
 
 - Tag color, set with `Replica::set_tag_color`: one of the eight
@@ -164,7 +166,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - JSON wire format for operations and snapshots, with validation on decode.
   - `PROTOCOL_VERSION` = 1.
 
-[Unreleased]: https://github.com/Syu-fu/trackdo-core/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Syu-fu/trackdo-core/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Syu-fu/trackdo-core/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Syu-fu/trackdo-core/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Syu-fu/trackdo-core/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Syu-fu/trackdo-core/compare/v0.2.0...v0.3.0
