@@ -15,7 +15,7 @@ use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Op, OpId, OpTarget, Seq};
 use trackdo_core::replica::{CommandError, Replica, Snapshot};
-use trackdo_core::tag::{Tag, TagId};
+use trackdo_core::tag::{Tag, TagColor, TagId};
 use trackdo_core::task::{Task, TaskId, TaskPriority};
 use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 
@@ -368,6 +368,7 @@ enum Edit {
     CreateTag(String),
     RenameTag(usize, String),
     DeleteTag(usize),
+    SetTagColor(usize, Option<TagColor>),
     /// Task index, tag index, and whether to add or remove the tag.
     TagTask(usize, usize, bool),
 }
@@ -429,6 +430,8 @@ fn edit() -> impl Strategy<Value = Edit> {
         1 => tag_name().prop_map(Edit::CreateTag),
         1 => (i(), tag_name()).prop_map(|(i, name)| Edit::RenameTag(i, name)),
         1 => i().prop_map(Edit::DeleteTag),
+        1 => (i(), prop::option::of(prop::sample::select(TagColor::ALL.to_vec())))
+            .prop_map(|(i, color)| Edit::SetTagColor(i, color)),
         2 => (i(), i(), any::<bool>()).prop_map(|(t, g, on)| Edit::TagTask(t, g, on)),
     ]
 }
@@ -456,6 +459,7 @@ fn run_edit(node: &mut Node, edit: &Edit) {
         Edit::CreateTag(name) => node.emitting(|r| r.create_tag(name).map(drop), []),
         Edit::RenameTag(_, name) => on(node, tag, |r, id| r.rename_tag(id, name)),
         Edit::DeleteTag(_) => on(node, tag, Replica::delete_tag),
+        Edit::SetTagColor(_, color) => on(node, tag, |r, id| r.set_tag_color(id, *color)),
         Edit::TagTask(_, g, tagged) => match node.pick_tag(*g) {
             Some(tag) if *tagged => on(node, task, |r, id| r.tag_task(id, tag)),
             Some(tag) => on(node, task, |r, id| r.untag_task(id, tag)),
@@ -532,6 +536,7 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::AddEntry(i, ..)
         | Edit::RenameTag(i, _)
         | Edit::DeleteTag(i)
+        | Edit::SetTagColor(i, _)
         | Edit::TagTask(i, ..) => *i,
     }
 }
@@ -616,6 +621,7 @@ fn tag_hlcs(tag: &Tag) -> impl Iterator<Item = Hlc> {
     [
         tag.registers().name.as_ref().map(Lww::hlc),
         tag.registers().deleted.as_ref().map(Lww::hlc),
+        tag.registers().color.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()

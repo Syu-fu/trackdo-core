@@ -1,0 +1,14 @@
+---
+source: crates/trackdo-protocol/src/tag.rs
+expression: names
+---
+[
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "blue",
+  "purple",
+  "pink",
+  "gray"
+]

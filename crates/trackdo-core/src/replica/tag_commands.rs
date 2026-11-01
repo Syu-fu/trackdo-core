@@ -3,7 +3,7 @@
 use super::{CommandError, Replica};
 use crate::env::{Clock, IdGen};
 use crate::op::OpTarget;
-use crate::tag::{Tag, TagChange, TagId, TagName};
+use crate::tag::{Tag, TagChange, TagColor, TagId, TagName};
 use crate::task::{Task, TaskChange, TaskId};
 
 impl<C: Clock, G: IdGen> Replica<C, G> {
@@ -37,6 +37,16 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             return Err(CommandError::TagNameTaken(other));
         }
         self.emit_tag(id, TagChange::Name(name))
+    }
+
+    /// `None` removes the color.
+    pub fn set_tag_color(
+        &mut self,
+        id: TagId,
+        color: Option<TagColor>,
+    ) -> Result<(), CommandError> {
+        self.ensure_tag_editable(id)?;
+        self.emit_tag(id, TagChange::Color(color))
     }
 
     /// The tag stays in storage as a tombstone.
@@ -237,6 +247,42 @@ mod tests {
         assert_eq!(
             replica.delete_tag(gone),
             Err(CommandError::TagDeleted(gone))
+        );
+    }
+
+    #[test]
+    fn set_tag_color_sets_and_clears_the_color() {
+        let mut replica = replica();
+        let work = replica.create_tag("work").unwrap();
+
+        replica.set_tag_color(work, Some(TagColor::Green)).unwrap();
+        assert_eq!(replica.tag(work).unwrap().color(), Some(TagColor::Green));
+
+        replica.set_tag_color(work, None).unwrap();
+        assert_eq!(replica.tag(work).unwrap().color(), None);
+        assert_eq!(
+            tag_changes(&replica)[1..],
+            [
+                (work, TagChange::Color(Some(TagColor::Green))),
+                (work, TagChange::Color(None)),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_tag_color_needs_a_live_tag() {
+        let mut replica = replica();
+        let gone = replica.create_tag("gone").unwrap();
+        replica.delete_tag(gone).unwrap();
+        let unknown = TagId(999);
+
+        assert_eq!(
+            replica.set_tag_color(gone, Some(TagColor::Red)),
+            Err(CommandError::TagDeleted(gone))
+        );
+        assert_eq!(
+            replica.set_tag_color(unknown, Some(TagColor::Red)),
+            Err(CommandError::TagNotFound(unknown))
         );
     }
 

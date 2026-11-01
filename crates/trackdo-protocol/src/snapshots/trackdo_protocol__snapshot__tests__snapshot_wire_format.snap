@@ -166,7 +166,8 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
       },
-      "deleted": null
+      "deleted": null,
+      "color": null
     }
   ]
 }

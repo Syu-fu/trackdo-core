@@ -14,4 +14,4 @@ pub mod state;
 pub mod tag;
 
 /// Version of the sync protocol. Bump on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tag color, set with `Replica::set_tag_color`: one of the eight
+  `TagColor`s of a fixed palette (`red`, `orange`, `yellow`, `green`,
+  `blue`, `purple`, `pink`, `gray`) or none. Clients pick the shade, so a
+  tag can suit both light and dark themes.
+- Stored states written by earlier versions, whose tags lack a color, still
+  load.
+
+### Changed
+
+- **Breaking:** `TagChange` has a `Color` variant and `TagRegisters` a
+  `color` field.
+- **Breaking:** `PROTOCOL_VERSION` is 5, as operations may now carry tag
+  colors that older clients cannot decode.
+
 ## [0.4.0] - 2026-10-25
 
 ### Added

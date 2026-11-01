@@ -63,11 +63,41 @@ impl TagName {
     }
 }
 
+/// A color from a fixed palette. Clients pick the shade that suits their
+/// theme, so a tag looks alike on every device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TagColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Pink,
+    Gray,
+}
+
+impl TagColor {
+    /// Every color, in palette order.
+    pub const ALL: [Self; 8] = [
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+        Self::Gray,
+    ];
+}
+
 /// A write to a single tag field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TagChange {
     Name(TagName),
     Deleted(bool),
+    /// `None` removes the color.
+    Color(Option<TagColor>),
 }
 
 /// The register of every tag field, `None` until its first write arrives.
@@ -75,6 +105,7 @@ pub enum TagChange {
 pub struct TagRegisters {
     pub name: Option<Lww<TagName>>,
     pub deleted: Option<Lww<bool>>,
+    pub color: Option<Lww<Option<TagColor>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +122,7 @@ impl Tag {
             registers: TagRegisters {
                 name: None,
                 deleted: None,
+                color: None,
             },
         }
     }
@@ -120,6 +152,14 @@ impl Tag {
             .is_some_and(|deleted| *deleted.value())
     }
 
+    /// `None` until a color is set, or after it was removed.
+    pub fn color(&self) -> Option<TagColor> {
+        self.registers
+            .color
+            .as_ref()
+            .and_then(|color| *color.value())
+    }
+
     /// Tag after applying `change` written at `hlc`. Stale writes are ignored.
     pub fn apply(&self, change: &TagChange, hlc: Hlc) -> Self {
         let current = &self.registers;
@@ -132,6 +172,10 @@ impl Tag {
                 deleted: Some(write(&current.deleted, *deleted, hlc)),
                 ..current.clone()
             },
+            TagChange::Color(color) => TagRegisters {
+                color: Some(write(&current.color, *color, hlc)),
+                ..current.clone()
+            },
         };
         Self {
             id: self.id,
@@ -141,14 +185,21 @@ impl Tag {
 
     /// The write each field holds, as it would be sent again.
     pub(crate) fn writes(&self) -> impl Iterator<Item = (TagChange, Hlc)> {
-        let TagRegisters { name, deleted } = &self.registers;
+        let TagRegisters {
+            name,
+            deleted,
+            color,
+        } = &self.registers;
         let name = name
             .as_ref()
             .map(|name| (TagChange::Name(name.value().clone()), name.hlc()));
         let deleted = deleted
             .as_ref()
             .map(|deleted| (TagChange::Deleted(*deleted.value()), deleted.hlc()));
-        [name, deleted].into_iter().flatten()
+        let color = color
+            .as_ref()
+            .map(|color| (TagChange::Color(*color.value()), color.hlc()));
+        [name, deleted, color].into_iter().flatten()
     }
 
     /// Timestamp of the most recent write to any field.
@@ -165,6 +216,7 @@ impl Tag {
             registers: TagRegisters {
                 name: join(&a.name, &b.name),
                 deleted: join(&a.deleted, &b.deleted),
+                color: join(&a.color, &b.color),
             },
         }
     }
@@ -216,6 +268,24 @@ mod tests {
     }
 
     #[test]
+    fn color_is_none_until_set_and_can_be_cleared() {
+        let tag = Tag::empty(ID);
+        assert_eq!(tag.color(), None);
+
+        let blue = tag.apply(&TagChange::Color(Some(TagColor::Blue)), at(1));
+        assert_eq!(blue.color(), Some(TagColor::Blue));
+
+        let cleared = blue
+            .apply(&TagChange::Color(None), at(3))
+            .apply(&TagChange::Color(Some(TagColor::Red)), at(2));
+        assert_eq!(cleared.color(), None);
+        assert_eq!(
+            cleared.writes().collect::<Vec<_>>(),
+            vec![(TagChange::Color(None), at(3))]
+        );
+    }
+
+    #[test]
     fn apply_sets_fields_and_ignores_stale_writes() {
         let tag = Tag::empty(ID)
             .apply(&TagChange::Name(name("new")), at(2))
@@ -238,6 +308,8 @@ mod tests {
         let change = prop_oneof![
             prop::sample::select(vec!["a", "b"]).prop_map(|s| TagChange::Name(name(s))),
             any::<bool>().prop_map(TagChange::Deleted),
+            prop::option::of(prop::sample::select(TagColor::ALL.to_vec()))
+                .prop_map(TagChange::Color),
         ];
         (change, 0u64..4, 0u128..3)
             .prop_map(|(change, wall, device)| (change, Hlc::new(wall, 0, DeviceId(device))))

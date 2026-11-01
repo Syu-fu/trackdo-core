@@ -1,0 +1,24 @@
+---
+source: crates/trackdo-protocol/src/tag.rs
+expression: "TagDto::from(&tag)"
+---
+{
+  "id": "dc59ba82-d0ee-5fec-b8e2-c6935ec3ee03",
+  "name": {
+    "value": "work",
+    "hlc": {
+      "wall_ms": 1730000000000,
+      "counter": 0,
+      "device": "01928f39-ffff-7abc-9def-0123456789ab"
+    }
+  },
+  "deleted": null,
+  "color": {
+    "value": "gray",
+    "hlc": {
+      "wall_ms": 1730000100000,
+      "counter": 0,
+      "device": "01928f39-ffff-7abc-9def-0123456789ab"
+    }
+  }
+}

@@ -34,7 +34,7 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
 - **Conflict resolution** – each field of a task (`title`, `status`,
   `deleted`, `priority`, `note`, `due`, `scheduled_at`, `parent`), of a time
   entry (`started_at`, `stopped_at`, `deleted`) and of a tag (`name`,
-  `deleted`) is an independent last-writer-wins register ordered by a
+  `deleted`, `color`) is an independent last-writer-wins register ordered by a
   [Hybrid Logical Clock](https://cse.buffalo.edu/tech-reports/2014-04.pdf).
   Concurrent edits to different fields are both kept, and merging is
   commutative, associative and idempotent.
