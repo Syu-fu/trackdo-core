@@ -22,6 +22,13 @@ pub struct DateError {
 }
 
 impl Date {
+    /// The earliest supported date.
+    pub(crate) const FIRST: Self = Self {
+        year: 1,
+        month: 1,
+        day: 1,
+    };
+
     pub fn new(year: u16, month: u8, day: u8) -> Result<Self, DateError> {
         let valid = (1..=9999).contains(&year)
             && (1..=12).contains(&month)
@@ -50,11 +57,11 @@ impl Date {
     }
 
     /// Day of the year, from 1.
-    pub fn ordinal(self) -> u16 {
-        let before: u16 = (1..self.month)
-            .map(|month| u16::from(days_in_month(self.year, month)))
-            .sum();
-        before + u16::from(self.day)
+    pub const fn ordinal(self) -> u16 {
+        const DAYS_BEFORE_MONTH: [u16; 12] =
+            [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+        let leap_day = (self.month > 2 && is_leap_year(self.year)) as u16;
+        DAYS_BEFORE_MONTH[self.month as usize - 1] + leap_day + self.day as u16
     }
 
     pub const fn days_in_month(self) -> u8 {
@@ -71,6 +78,34 @@ impl Date {
         Self::from_day_number(self.day_number() + i64::from(days))
     }
 
+    /// The day after, without the arithmetic of [`Date::add_days`].
+    pub(crate) const fn next_day(self) -> Option<Self> {
+        if self.day < self.days_in_month() {
+            Some(Self {
+                day: self.day + 1,
+                ..self
+            })
+        } else {
+            self.first_of_next_month()
+        }
+    }
+
+    pub(crate) const fn first_of_next_month(self) -> Option<Self> {
+        match (self.year, self.month) {
+            (9999, 12) => None,
+            (year, 12) => Some(Self {
+                year: year + 1,
+                month: 1,
+                day: 1,
+            }),
+            (year, month) => Some(Self {
+                year,
+                month: month + 1,
+                day: 1,
+            }),
+        }
+    }
+
     /// Days from `self` to `other`, negative when `other` is earlier.
     pub const fn days_until(self, other: Self) -> i32 {
         // The supported range spans fewer than four million days.
@@ -78,19 +113,12 @@ impl Date {
     }
 
     /// Days since 0001-01-01, a Monday.
-    const fn day_number(self) -> i64 {
-        // Howard Hinnant's days_from_civil, with years starting in March.
-        let year = self.year as i64 - (self.month <= 2) as i64;
-        let era = year.div_euclid(400);
-        let year_of_era = year - era * 400;
-        let month = self.month as i64;
-        let day_of_year =
-            (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + self.day as i64 - 1;
-        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-        era * 146_097 + day_of_era - DAY_NUMBER_OF_0001_01_01
+    pub(crate) const fn day_number(self) -> i64 {
+        days_from_civil(self.year as i64, self.month, self.day)
     }
 
-    fn from_day_number(number: i64) -> Option<Self> {
+    /// The date [`Date::day_number`] maps to `number`, if supported.
+    pub(crate) fn from_day_number(number: i64) -> Option<Self> {
         // Howard Hinnant's civil_from_days.
         let days = number + DAY_NUMBER_OF_0001_01_01;
         let era = days.div_euclid(146_097);
@@ -109,6 +137,19 @@ impl Date {
         let year = u16::try_from(year).ok()?;
         Self::new(year, month as u8, day as u8).ok()
     }
+}
+
+/// Days from 0001-01-01 to the given day, which may lie outside the
+/// supported years.
+pub(crate) const fn days_from_civil(year: i64, month: u8, day: u8) -> i64 {
+    // Howard Hinnant's days_from_civil, with years starting in March.
+    let year = year - (month <= 2) as i64;
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month = month as i64;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i64 - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - DAY_NUMBER_OF_0001_01_01
 }
 
 /// Day number of 0001-01-01 in a count starting at 0000-03-01.
@@ -280,6 +321,21 @@ mod tests {
                 tomorrow.weekday().days_from_monday(),
                 (today.weekday().days_from_monday() + 1) % 7
             );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn next_day_agrees_with_adding_a_day(
+            (y, m, d) in (1u16..=9999, 1u8..=12, 1u8..=31),
+        ) {
+            if let Ok(today) = Date::new(y, m, d) {
+                prop_assert_eq!(today.next_day(), today.add_days(1));
+                prop_assert_eq!(
+                    today.first_of_next_month(),
+                    today.add_days(i32::from(today.days_in_month() - today.day()) + 1)
+                );
+            }
         }
     }
 

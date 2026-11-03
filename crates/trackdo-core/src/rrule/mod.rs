@@ -1,5 +1,6 @@
 //! Recurrence rules of RFC 5545, limited to whole days.
 
+mod expand;
 mod parse;
 
 use std::fmt;
