@@ -29,10 +29,13 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
         self.emit_task(id, vec![TaskChange::Title(title)])
     }
 
-    /// Also stops the task's running timer.
+    /// Also stops the task's running timer. A repeating task moves to its
+    /// next occurrence instead; see [`Replica::set_recurrence`].
     pub fn complete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
-        self.stop_timer_and_emit(id, TaskChange::Status(TaskStatus::Done))
+        let stops = self.stop_running(self.now(), |entry| entry.task_id() == id);
+        let completion = self.completion(id);
+        self.emit(stops.into_iter().chain(completion).collect())
     }
 
     pub fn reopen(&mut self, id: TaskId) -> Result<(), CommandError> {
@@ -70,11 +73,6 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn delete(&mut self, id: TaskId) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
         self.delete_subtree(id)
-    }
-
-    fn stop_timer_and_emit(&mut self, id: TaskId, change: TaskChange) -> Result<(), CommandError> {
-        let stops = self.stop_running(self.now(), |entry| entry.task_id() == id);
-        self.emit_with_stops(stops, id, change)
     }
 
     /// Also stops running timers of the task and of every task below it.
