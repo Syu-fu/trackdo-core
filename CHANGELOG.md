@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Recurring tasks, set with `Replica::set_recurrence` and stopped with
+  `clear_recurrence`. A `Recurrence` holds an RFC 5545 recurrence rule, its
+  first occurrence and a `RecurrenceBasis`: `Due` follows the rule's own
+  dates, while `Completion` counts from the day the task is done. The first
+  occurrence is the task's due date; a task without one becomes due today.
+- Completing a recurring task with `Replica::complete` keeps it to do and
+  moves its due date to the next occurrence: the first one after the due
+  date that is not past, or the one after today when counted from
+  completion. It also unschedules the task and reopens the completed tasks
+  below it. Once the rule has ended, the task is completed as usual.
+- `rrule::RRule`, a recurrence rule of whole days parsed from text such as
+  `FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1`. It supports `FREQ`
+  (`DAILY` to `YEARLY`), `INTERVAL`, `COUNT`, `UNTIL` (a date), `BYMONTH`,
+  `BYWEEKNO`, `BYYEARDAY`, `BYMONTHDAY`, `BYDAY`, `BYSETPOS` and `WKST`, and
+  rejects parts finer than a day. `RRule::occurrences` lists its dates,
+  counting the start as the first, as RFC 5545 does. The dates are checked
+  against python-dateutil.
+- `Date::weekday`, `add_days`, `days_until`, `ordinal`, `days_in_month`,
+  `days_in_year` and `from_unix_days`, and the `Weekday` type.
+- Stored states written by earlier versions, whose tasks lack a recurrence,
+  still load.
+
+### Changed
+
+- **Breaking:** `Clock` has a `today` method returning the device's local
+  date, which only the host knows the time zone of.
+- **Breaking:** `TaskChange` has a `Recurrence` variant, `TaskRegisters` a
+  `recurrence` field, and `CommandError` the `RRule` and `Recurrence`
+  variants.
+- **Breaking:** `PROTOCOL_VERSION` is 6, as operations may now carry
+  recurrences that older clients cannot decode.
+
 ## [0.5.0] - 2026-11-01
 
 ### Added

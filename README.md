@@ -32,9 +32,10 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
 ```
 
 - **Conflict resolution** – each field of a task (`title`, `status`,
-  `deleted`, `priority`, `note`, `due`, `scheduled_at`, `parent`), of a time
-  entry (`started_at`, `stopped_at`, `deleted`) and of a tag (`name`,
-  `deleted`, `color`) is an independent last-writer-wins register ordered by a
+  `deleted`, `priority`, `note`, `due`, `scheduled_at`, `parent`,
+  `recurrence`), of a time entry (`started_at`, `stopped_at`, `deleted`) and
+  of a tag (`name`, `deleted`, `color`) is an independent last-writer-wins
+  register ordered by a
   [Hybrid Logical Clock](https://cse.buffalo.edu/tech-reports/2014-04.pdf).
   Concurrent edits to different fields are both kept, and merging is
   commutative, associative and idempotent.
@@ -48,6 +49,11 @@ client: apply_remote ◀────────── GET /events (SSE) ──�
   name they were created with, so a tag created on two devices offline
   becomes one. Whether a task carries a tag is a register per tag, so
   tagging on one device never undoes tagging on another.
+- **Recurring tasks** – a task repeats by an RFC 5545 recurrence rule of
+  whole days, counted from its due dates or from each completion.
+  Completing it moves its due date to the next occurrence and reopens the
+  tasks below it. These are ordinary writes, so devices completing the
+  same occurrence offline converge like any other edits.
 - **No create operation** – a task, time entry or tag comes into existence
   when the first write for its id arrives, so operations may arrive in any
   order.
