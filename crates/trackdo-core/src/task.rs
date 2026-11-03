@@ -6,6 +6,7 @@ use crate::date::Date;
 use crate::hlc::Hlc;
 use crate::lww::{Lww, join, write};
 use crate::note::Note;
+use crate::recurrence::Recurrence;
 use crate::tag::TagId;
 use crate::time_entry::Timestamp;
 use crate::title::Title;
@@ -42,6 +43,8 @@ pub enum TaskChange {
     ScheduledAt(Option<Timestamp>),
     /// `None` moves the task to the top level.
     Parent(Option<TaskId>),
+    /// `None` stops the task repeating.
+    Recurrence(Option<Recurrence>),
     /// Adds or removes one tag, leaving the others as they are.
     Tag {
         tag: TagId,
@@ -62,6 +65,7 @@ pub struct TaskRegisters {
     pub due: Option<Lww<Option<Date>>>,
     pub scheduled_at: Option<Lww<Option<Timestamp>>>,
     pub parent: Option<Lww<Option<TaskId>>>,
+    pub recurrence: Option<Lww<Option<Recurrence>>>,
     /// Whether each tag ever written is on the task.
     pub tags: BTreeMap<TagId, Lww<bool>>,
 }
@@ -86,6 +90,7 @@ impl Task {
                 due: None,
                 scheduled_at: None,
                 parent: None,
+                recurrence: None,
                 tags: BTreeMap::new(),
             },
         }
@@ -152,6 +157,14 @@ impl Task {
             .and_then(|parent| *parent.value())
     }
 
+    /// `None` unless the task repeats.
+    pub fn recurrence(&self) -> Option<&Recurrence> {
+        self.registers
+            .recurrence
+            .as_ref()
+            .and_then(|recurrence| recurrence.value().as_ref())
+    }
+
     /// Ids of the tags on the task, including tags that are deleted or not
     /// received yet.
     pub fn tag_ids(&self) -> impl Iterator<Item = TagId> + '_ {
@@ -206,6 +219,10 @@ impl Task {
                 parent: Some(write(&current.parent, *parent, hlc)),
                 ..current.clone()
             },
+            TaskChange::Recurrence(recurrence) => TaskRegisters {
+                recurrence: Some(write(&current.recurrence, recurrence.clone(), hlc)),
+                ..current.clone()
+            },
             TaskChange::Tag { tag, tagged } => {
                 let mut tags = current.tags.clone();
                 tags.insert(*tag, write(&current.tags.get(tag).cloned(), *tagged, hlc));
@@ -232,6 +249,7 @@ impl Task {
             due,
             scheduled_at,
             parent,
+            recurrence,
             tags,
         } = &self.registers;
         let title = title
@@ -258,6 +276,10 @@ impl Task {
         let parent = parent
             .as_ref()
             .map(|parent| (TaskChange::Parent(*parent.value()), parent.hlc()));
+        let recurrence = recurrence.as_ref().map(|recurrence| {
+            let change = TaskChange::Recurrence(recurrence.value().clone());
+            (change, recurrence.hlc())
+        });
         [
             title,
             status,
@@ -267,6 +289,7 @@ impl Task {
             due,
             scheduled_at,
             parent,
+            recurrence,
         ]
         .into_iter()
         .flatten()
@@ -300,6 +323,7 @@ impl Task {
                 due: join(&a.due, &b.due),
                 scheduled_at: join(&a.scheduled_at, &b.scheduled_at),
                 parent: join(&a.parent, &b.parent),
+                recurrence: join(&a.recurrence, &b.recurrence),
                 tags: join_tags(&a.tags, &b.tags),
             },
         }
@@ -323,6 +347,8 @@ fn join_tags(
 mod tests {
     use super::*;
     use crate::hlc::DeviceId;
+    use crate::recurrence::RecurrenceBasis;
+    use crate::rrule::RRule;
     use proptest::prelude::*;
 
     const ID: TaskId = TaskId(42);
@@ -335,6 +361,11 @@ mod tests {
 
     fn date(day: u8) -> Date {
         Date::new(2026, 10, day).unwrap()
+    }
+
+    fn weekly(day: u8) -> Recurrence {
+        let rule = RRule::parse("FREQ=WEEKLY").unwrap();
+        Recurrence::new(rule, date(day), RecurrenceBasis::Due).unwrap()
     }
 
     fn tagged(tag: TagId, tagged: bool) -> TaskChange {
@@ -392,6 +423,20 @@ mod tests {
 
         assert_eq!(task.note(), None);
         assert!(task.registers().note.is_some());
+    }
+
+    #[test]
+    fn recurrence_follows_newest_write_and_can_be_cleared() {
+        let task = Task::empty(ID);
+        assert_eq!(task.recurrence(), None);
+
+        let task = task
+            .apply(&TaskChange::Recurrence(Some(weekly(2))), at(2, A))
+            .apply(&TaskChange::Recurrence(Some(weekly(1))), at(1, B));
+        assert_eq!(task.recurrence(), Some(&weekly(2)));
+
+        let task = task.apply(&TaskChange::Recurrence(None), at(3, B));
+        assert_eq!(task.recurrence(), None);
     }
 
     #[test]
@@ -516,6 +561,7 @@ mod tests {
             prop::option::of(1u8..4).prop_map(|day| TaskChange::Due(day.map(date))),
             prop::option::of(0u64..3).prop_map(|time| TaskChange::ScheduledAt(time.map(Timestamp))),
             prop::option::of(0u128..3).prop_map(|id| TaskChange::Parent(id.map(TaskId))),
+            prop::option::of(1u8..3).prop_map(|day| TaskChange::Recurrence(day.map(weekly))),
             (0u128..3, any::<bool>()).prop_map(|(tag, on)| tagged(TagId(tag), on)),
         ]
     }
@@ -547,6 +593,7 @@ mod tests {
             due: Some(Lww::new(Some(date(1)), at(6, A))),
             scheduled_at: Some(Lww::new(Some(Timestamp(9)), at(7, B))),
             parent: Some(Lww::new(Some(TaskId(3)), at(8, A))),
+            recurrence: Some(Lww::new(Some(weekly(1)), at(8, B))),
             tags: BTreeMap::from([(TagId(1), Lww::new(true, at(9, B)))]),
         };
 

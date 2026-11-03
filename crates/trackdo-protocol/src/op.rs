@@ -5,12 +5,14 @@ use uuid::Uuid;
 
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::op::{Op, OpId, OpTarget};
+use trackdo_core::recurrence::Recurrence;
 use trackdo_core::tag::{TagChange, TagId};
 use trackdo_core::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
 use trackdo_core::time_entry::{TimeEntryChange, TimeEntryId, Timestamp};
 
 use crate::date::{decode_date, encode_date};
 use crate::error::{ProtocolError, decode_note, decode_title};
+use crate::recurrence::RecurrenceDto;
 use crate::tag::TagChangeDto;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +61,8 @@ pub enum TaskChangeDto {
     ScheduledAt(Option<u64>),
     /// The parent task's id, or `null` to move the task to the top level.
     Parent(Option<Uuid>),
+    /// `null` stops the task repeating.
+    Recurrence(Option<RecurrenceDto>),
     /// Adds (`tagged: true`) or removes one tag.
     Tag {
         tag_id: Uuid,
@@ -195,6 +199,9 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::Parent(parent) => {
                 Self::Parent(parent.map(|TaskId(parent)| Uuid::from_u128(parent)))
             }
+            TaskChange::Recurrence(recurrence) => {
+                Self::Recurrence(recurrence.as_ref().map(RecurrenceDto::from))
+            }
             TaskChange::Tag { tag, tagged } => Self::Tag {
                 tag_id: Uuid::from_u128(tag.0),
                 tagged: *tagged,
@@ -220,6 +227,9 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Parent(parent) => {
                 Ok(Self::Parent(parent.map(|parent| TaskId(parent.as_u128()))))
             }
+            TaskChangeDto::Recurrence(recurrence) => Ok(Self::Recurrence(
+                recurrence.map(Recurrence::try_from).transpose()?,
+            )),
             TaskChangeDto::Tag { tag_id, tagged } => Ok(Self::Tag {
                 tag: TagId(tag_id.as_u128()),
                 tagged,
@@ -383,6 +393,18 @@ pub(crate) mod tests {
         let due = Date::new(2026, 10, 31).unwrap();
 
         insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Due(Some(due)))));
+    }
+
+    #[test]
+    fn recurrence_op_wire_format() {
+        let recurrence = crate::recurrence::tests::weekly();
+
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Recurrence(Some(recurrence)))));
+    }
+
+    #[test]
+    fn cleared_recurrence_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Recurrence(None))));
     }
 
     #[test]
@@ -579,6 +601,8 @@ pub(crate) mod tests {
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
             prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
             prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
+            prop::option::of(crate::recurrence::tests::any_recurrence())
+                .prop_map(TaskChange::Recurrence),
             (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
                 tag: TagId(tag),
                 tagged

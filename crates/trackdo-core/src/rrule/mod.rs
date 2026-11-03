@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::date::{Date, Weekday};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Frequency {
     Daily,
     Weekly,
@@ -44,7 +44,7 @@ struct WeekdayNum {
 }
 
 /// When the occurrences end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum End {
     Never,
     /// After this many occurrences, the first included.
@@ -56,7 +56,7 @@ enum End {
 /// A recurrence rule whose occurrences are whole days, so the parts finer
 /// than a day are not supported. Lists are kept sorted without duplicates,
 /// and [`fmt::Display`] writes the canonical form.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RRule {
     frequency: Frequency,
     interval: u32,
@@ -97,6 +97,12 @@ pub enum RRuleError {
     OrdinalNotAllowed,
     #[error("BYSETPOS needs another BY part")]
     SetPosWithoutOtherPart,
+}
+
+impl RRule {
+    pub(crate) const fn has_count(&self) -> bool {
+        matches!(self.end, End::Count(_))
+    }
 }
 
 impl fmt::Display for RRule {

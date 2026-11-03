@@ -7,6 +7,7 @@ pub mod hlc;
 pub mod lww;
 pub mod note;
 pub mod op;
+pub mod recurrence;
 pub mod replica;
 pub mod rrule;
 pub mod tag;

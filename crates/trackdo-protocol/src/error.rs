@@ -4,6 +4,8 @@ use thiserror::Error;
 
 use trackdo_core::date::DateError;
 use trackdo_core::note::{Note, NoteError};
+use trackdo_core::recurrence::RecurrenceError;
+use trackdo_core::rrule::RRuleError;
 use trackdo_core::tag::{TagName, TagNameError};
 use trackdo_core::title::{Title, TitleError};
 
@@ -29,6 +31,13 @@ pub enum ProtocolError {
     /// Tag names are not normalized on receipt either.
     #[error("tag name is not in canonical form")]
     NonCanonicalTagName,
+    #[error("invalid recurrence rule: {0}")]
+    InvalidRecurrenceRule(#[from] RRuleError),
+    /// Recurrence rules are not normalized on receipt either.
+    #[error("recurrence rule is not in canonical form")]
+    NonCanonicalRecurrenceRule,
+    #[error("invalid recurrence: {0}")]
+    InvalidRecurrence(#[from] RecurrenceError),
     #[error("event id is not `<log_id>:<seq>`")]
     InvalidEventId,
 }

@@ -5,6 +5,7 @@
 //! once, so the UI never waits on the network.
 
 mod healing;
+mod recurrence_commands;
 mod republish;
 mod subtasks;
 mod tag_commands;
@@ -23,6 +24,8 @@ use crate::hierarchy::Hierarchy;
 use crate::hlc::{DeviceId, Hlc, HlcError};
 use crate::note::NoteError;
 use crate::op::{LogId, Op, OpId, OpTarget, Seq};
+use crate::recurrence::RecurrenceError;
+use crate::rrule::RRuleError;
 use crate::tag::{Tag, TagId, TagNameError};
 use crate::task::{Task, TaskChange, TaskId};
 use crate::time_entry::{TimeEntry, TimeEntryId, Timestamp};
@@ -46,6 +49,10 @@ pub enum CommandError {
     TagDeleted(TagId),
     #[error("tag {0:?} already has that name")]
     TagNameTaken(TagId),
+    #[error(transparent)]
+    RRule(#[from] RRuleError),
+    #[error(transparent)]
+    Recurrence(#[from] RecurrenceError),
     #[error("moving {task:?} under {parent:?} would create a cycle")]
     Cycle { task: TaskId, parent: TaskId },
     #[error("time entry {0:?} does not exist")]

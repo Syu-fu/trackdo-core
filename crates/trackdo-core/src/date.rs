@@ -78,6 +78,13 @@ impl Date {
         Self::from_day_number(self.day_number() + i64::from(days))
     }
 
+    /// The date `days` after 1970-01-01, or before when negative. A host can
+    /// get its local date from the local time in Unix milliseconds, divided
+    /// by the milliseconds of a day and rounded down.
+    pub fn from_unix_days(days: i64) -> Option<Self> {
+        Self::from_day_number(days.checked_add(days_from_civil(1970, 1, 1))?)
+    }
+
     /// The day after, without the arithmetic of [`Date::add_days`].
     pub(crate) const fn next_day(self) -> Option<Self> {
         if self.day < self.days_in_month() {
@@ -337,6 +344,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn counts_days_from_the_unix_epoch() {
+        assert_eq!(Date::from_unix_days(0), Some(date(1970, 1, 1)));
+        assert_eq!(Date::from_unix_days(20_760), Some(date(2026, 11, 3)));
+        assert_eq!(Date::from_unix_days(-719_162), Some(date(1, 1, 1)));
+        assert_eq!(Date::from_unix_days(2_932_896), Some(date(9999, 12, 31)));
+        assert_eq!(Date::from_unix_days(-719_163), None);
+        assert_eq!(Date::from_unix_days(2_932_897), None);
     }
 
     #[test]

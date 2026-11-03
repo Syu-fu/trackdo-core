@@ -1,6 +1,7 @@
 //! Deterministic environment shared by replica tests.
 
 use super::Replica;
+use crate::date::Date;
 use crate::env::{Clock, IdGen};
 use crate::hlc::DeviceId;
 use crate::op::{LogId, OpId, OpTarget};
@@ -19,6 +20,10 @@ pub(super) struct FixedClock(pub(super) u64);
 impl Clock for FixedClock {
     fn now_millis(&self) -> u64 {
         self.0
+    }
+
+    fn today(&self) -> Date {
+        Date::from_unix_days((self.0 / 86_400_000) as i64).unwrap()
     }
 }
 

@@ -14,6 +14,7 @@ use trackdo_core::env::{Clock, IdGen};
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Op, OpId, OpTarget, Seq};
+use trackdo_core::recurrence::RecurrenceBasis;
 use trackdo_core::replica::{CommandError, Replica, Snapshot};
 use trackdo_core::tag::{Tag, TagColor, TagId};
 use trackdo_core::task::{Task, TaskId, TaskPriority};
@@ -29,6 +30,10 @@ struct SimClock(Rc<Cell<u64>>);
 impl Clock for SimClock {
     fn now_millis(&self) -> u64 {
         self.0.get()
+    }
+
+    fn today(&self) -> Date {
+        Date::from_unix_days((self.0.get() / 86_400_000) as i64).unwrap()
     }
 }
 
@@ -358,6 +363,8 @@ enum Edit {
     SetDue(usize, Option<u8>),
     /// Milliseconds from now, or `None` to clear the scheduled time.
     Schedule(usize, Option<u64>),
+    /// A rule and its basis, or `None` to stop repeating.
+    Repeat(usize, Option<(&'static str, RecurrenceBasis)>),
     Start(usize),
     Stop(usize),
     /// Start and optional stop, as milliseconds before now.
@@ -421,6 +428,11 @@ fn edit() -> impl Strategy<Value = Edit> {
             .prop_map(|(i, n)| Edit::SetNote(i, n.to_owned())),
         1 => (i(), prop::option::of(1u8..4)).prop_map(|(i, day)| Edit::SetDue(i, day)),
         1 => (i(), prop::option::of(ago())).prop_map(|(i, ahead)| Edit::Schedule(i, ahead)),
+        1 => (i(), prop::option::of((
+            prop::sample::select(vec!["FREQ=DAILY", "FREQ=WEEKLY;BYDAY=MO,TH", "FREQ=MONTHLY;BYMONTHDAY=-1"]),
+            prop::sample::select(vec![RecurrenceBasis::Due, RecurrenceBasis::Completion]),
+        )))
+            .prop_map(|(i, repeat)| Edit::Repeat(i, repeat)),
         3 => i().prop_map(Edit::Start),
         1 => i().prop_map(Edit::Stop),
         1 => (i(), ago(), prop::option::of(ago()))
@@ -480,6 +492,10 @@ fn run_edit(node: &mut Node, edit: &Edit) {
             let at = ahead.map(|ahead| Timestamp(node.ago(0).0 + ahead));
             on(node, task, |r, id| r.schedule(id, at))
         }
+        Edit::Repeat(_, Some((rule, basis))) => {
+            on(node, task, |r, id| r.set_recurrence(id, rule, *basis))
+        }
+        Edit::Repeat(_, None) => on(node, task, Replica::clear_recurrence),
         Edit::SetDue(_, day) => {
             let due = day.map(|day| Date::new(2026, 10, day).unwrap());
             on(node, task, |r, id| r.set_due(id, due))
@@ -529,6 +545,7 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::SetNote(i, _)
         | Edit::SetDue(i, _)
         | Edit::Schedule(i, _)
+        | Edit::Repeat(i, _)
         | Edit::Start(i)
         | Edit::Stop(i)
         | Edit::SetTimes(i, ..)
@@ -601,6 +618,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> + '_ {
         task.registers().due.as_ref().map(Lww::hlc),
         task.registers().scheduled_at.as_ref().map(Lww::hlc),
         task.registers().parent.as_ref().map(Lww::hlc),
+        task.registers().recurrence.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()

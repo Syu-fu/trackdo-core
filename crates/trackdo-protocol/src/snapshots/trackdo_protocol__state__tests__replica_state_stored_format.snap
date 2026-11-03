@@ -68,6 +68,18 @@ expression: "ReplicaStateDto::from(&state())"
         }
       },
       "parent": null,
+      "recurrence": {
+        "value": {
+          "rule": "FREQ=WEEKLY;BYDAY=MO,TH",
+          "start": "2026-11-02",
+          "basis": "due"
+        },
+        "hlc": {
+          "wall_ms": 1730000001000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
       "tags": []
     }
   ],

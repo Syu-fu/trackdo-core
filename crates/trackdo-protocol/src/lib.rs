@@ -9,9 +9,10 @@ mod date;
 pub mod error;
 pub mod event;
 pub mod op;
+pub mod recurrence;
 pub mod snapshot;
 pub mod state;
 pub mod tag;
 
 /// Version of the sync protocol. Bump on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;

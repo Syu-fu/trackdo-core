@@ -65,6 +65,18 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
         }
       },
       "parent": null,
+      "recurrence": {
+        "value": {
+          "rule": "FREQ=WEEKLY;BYDAY=MO,TH",
+          "start": "2026-11-02",
+          "basis": "due"
+        },
+        "hlc": {
+          "wall_ms": 1730000001000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
       "tags": []
     },
     {
@@ -91,6 +103,7 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
       },
+      "recurrence": null,
       "tags": [
         {
           "tag_id": "dc59ba82-d0ee-5fec-b8e2-c6935ec3ee03",

@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Seq};
+use trackdo_core::recurrence::Recurrence;
 use trackdo_core::replica::Snapshot;
 use trackdo_core::tag::{Tag, TagId};
 use trackdo_core::task::{Task, TaskId, TaskPriority, TaskRegisters, TaskStatus};
@@ -15,6 +16,7 @@ use trackdo_core::time_entry::{TimeEntry, TimeEntryId, Timestamp};
 use crate::date::{decode_date, encode_date};
 use crate::error::{ProtocolError, decode_note, decode_title};
 use crate::op::{HlcDto, TaskPriorityDto, TaskStatusDto};
+use crate::recurrence::RecurrenceDto;
 use crate::tag::TagDto;
 
 /// All tasks, time entries and tags of the log `log_id` as of `seq`. `seq`
@@ -51,6 +53,9 @@ pub struct TaskDto {
     /// A `null` value means the task was moved to the top level.
     #[serde(default)]
     pub parent: Option<RegisterDto<Option<Uuid>>>,
+    /// A `null` value means the task stopped repeating.
+    #[serde(default)]
+    pub recurrence: Option<RegisterDto<Option<RecurrenceDto>>>,
     /// One register per tag ever written to the task, ordered by tag id.
     #[serde(default)]
     pub tags: Vec<TaskTagDto>,
@@ -162,6 +167,11 @@ impl From<&Task> for TaskDto {
                     parent.map(|TaskId(parent)| Uuid::from_u128(parent))
                 })
             }),
+            recurrence: registers.recurrence.as_ref().map(|reg| {
+                encode(reg, |recurrence| {
+                    recurrence.as_ref().map(RecurrenceDto::from)
+                })
+            }),
             tags: registers
                 .tags
                 .iter()
@@ -194,6 +204,13 @@ impl TryFrom<TaskDto> for Task {
                 Ok::<_, ProtocolError>(Lww::new(due, reg.hlc.into()))
             })
             .transpose()?;
+        let recurrence = dto
+            .recurrence
+            .map(|reg| {
+                let recurrence = reg.value.map(Recurrence::try_from).transpose()?;
+                Ok::<_, ProtocolError>(Lww::new(recurrence, reg.hlc.into()))
+            })
+            .transpose()?;
         Ok(Self::from_registers(
             TaskId(dto.id.as_u128()),
             TaskRegisters {
@@ -209,6 +226,7 @@ impl TryFrom<TaskDto> for Task {
                 parent: dto
                     .parent
                     .map(|reg| decode(reg, |parent| parent.map(|parent| TaskId(parent.as_u128())))),
+                recurrence,
                 tags: decode_task_tags(dto.tags),
             },
         ))
@@ -321,6 +339,10 @@ pub(crate) mod tests {
             .apply(
                 &TaskChange::ScheduledAt(Some(Timestamp(1_730_100_000_000))),
                 at(1_730_000_000_999),
+            )
+            .apply(
+                &TaskChange::Recurrence(Some(crate::recurrence::tests::weekly())),
+                at(1_730_000_001_000),
             )
     }
 
@@ -446,6 +468,7 @@ pub(crate) mod tests {
         assert_eq!(task.registers().due, None);
         assert_eq!(task.registers().scheduled_at, None);
         assert_eq!(task.registers().parent, None);
+        assert_eq!(task.registers().recurrence, None);
         assert!(task.registers().tags.is_empty());
     }
 
@@ -510,6 +533,8 @@ pub(crate) mod tests {
             prop::option::of(crate::date::tests::any_date()).prop_map(TaskChange::Due),
             prop::option::of(any::<u64>().prop_map(Timestamp)).prop_map(TaskChange::ScheduledAt),
             prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
+            prop::option::of(crate::recurrence::tests::any_recurrence())
+                .prop_map(TaskChange::Recurrence),
             (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
                 tag: TagId(tag),
                 tagged
