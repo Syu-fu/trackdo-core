@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use trackdo_core::date::DateError;
+use trackdo_core::estimate::EstimateError;
 use trackdo_core::note::{Note, NoteError};
 use trackdo_core::recurrence::RecurrenceError;
 use trackdo_core::rrule::RRuleError;
@@ -38,6 +39,8 @@ pub enum ProtocolError {
     NonCanonicalRecurrenceRule,
     #[error("invalid recurrence: {0}")]
     InvalidRecurrence(#[from] RecurrenceError),
+    #[error("invalid estimate: {0}")]
+    InvalidEstimate(#[from] EstimateError),
     #[error("event id is not `<log_id>:<seq>`")]
     InvalidEventId,
 }

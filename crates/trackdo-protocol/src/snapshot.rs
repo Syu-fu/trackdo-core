@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use trackdo_core::estimate::Estimate;
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Seq};
 use trackdo_core::recurrence::Recurrence;
@@ -56,6 +57,9 @@ pub struct TaskDto {
     /// A `null` value means the task stopped repeating.
     #[serde(default)]
     pub recurrence: Option<RegisterDto<Option<RecurrenceDto>>>,
+    /// Whole minutes; a `null` value means the estimate was cleared.
+    #[serde(default)]
+    pub estimate: Option<RegisterDto<Option<u32>>>,
     /// One register per tag ever written to the task, ordered by tag id.
     #[serde(default)]
     pub tags: Vec<TaskTagDto>,
@@ -172,6 +176,10 @@ impl From<&Task> for TaskDto {
                     recurrence.as_ref().map(RecurrenceDto::from)
                 })
             }),
+            estimate: registers
+                .estimate
+                .as_ref()
+                .map(|reg| encode(reg, |estimate| estimate.map(Estimate::minutes))),
             tags: registers
                 .tags
                 .iter()
@@ -211,6 +219,13 @@ impl TryFrom<TaskDto> for Task {
                 Ok::<_, ProtocolError>(Lww::new(recurrence, reg.hlc.into()))
             })
             .transpose()?;
+        let estimate = dto
+            .estimate
+            .map(|reg| {
+                let estimate = reg.value.map(Estimate::from_minutes).transpose()?;
+                Ok::<_, ProtocolError>(Lww::new(estimate, reg.hlc.into()))
+            })
+            .transpose()?;
         Ok(Self::from_registers(
             TaskId(dto.id.as_u128()),
             TaskRegisters {
@@ -227,6 +242,7 @@ impl TryFrom<TaskDto> for Task {
                     .parent
                     .map(|reg| decode(reg, |parent| parent.map(|parent| TaskId(parent.as_u128())))),
                 recurrence,
+                estimate,
                 tags: decode_task_tags(dto.tags),
             },
         ))
@@ -300,6 +316,7 @@ pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
     use trackdo_core::date::Date;
+    use trackdo_core::estimate::{Estimate, MAX_ESTIMATE_MINUTES};
     use trackdo_core::hlc::{DeviceId, Hlc};
     use trackdo_core::note::Note;
     use trackdo_core::task::TaskChange;
@@ -342,6 +359,10 @@ pub(crate) mod tests {
             )
             .apply(
                 &TaskChange::Recurrence(Some(crate::recurrence::tests::weekly())),
+                at(1_730_000_001_000),
+            )
+            .apply(
+                &TaskChange::Estimate(Some(Estimate::from_minutes(25).unwrap())),
                 at(1_730_000_001_000),
             )
     }
@@ -469,6 +490,7 @@ pub(crate) mod tests {
         assert_eq!(task.registers().scheduled_at, None);
         assert_eq!(task.registers().parent, None);
         assert_eq!(task.registers().recurrence, None);
+        assert_eq!(task.registers().estimate, None);
         assert!(task.registers().tags.is_empty());
     }
 
@@ -535,6 +557,10 @@ pub(crate) mod tests {
             prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
             prop::option::of(crate::recurrence::tests::any_recurrence())
                 .prop_map(TaskChange::Recurrence),
+            prop::option::of(
+                (1..=MAX_ESTIMATE_MINUTES).prop_map(|m| Estimate::from_minutes(m).unwrap())
+            )
+            .prop_map(TaskChange::Estimate),
             (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
                 tag: TagId(tag),
                 tagged

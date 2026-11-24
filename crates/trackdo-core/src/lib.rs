@@ -2,6 +2,7 @@
 
 pub mod date;
 pub mod env;
+pub mod estimate;
 pub mod hierarchy;
 pub mod hlc;
 pub mod lww;

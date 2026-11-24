@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::date::Date;
+use crate::estimate::Estimate;
 use crate::hlc::Hlc;
 use crate::lww::{Lww, join, write};
 use crate::note::Note;
@@ -45,6 +46,8 @@ pub enum TaskChange {
     Parent(Option<TaskId>),
     /// `None` stops the task repeating.
     Recurrence(Option<Recurrence>),
+    /// How long the task is planned to take; `None` clears the estimate.
+    Estimate(Option<Estimate>),
     /// Adds or removes one tag, leaving the others as they are.
     Tag {
         tag: TagId,
@@ -66,6 +69,7 @@ pub struct TaskRegisters {
     pub scheduled_at: Option<Lww<Option<Timestamp>>>,
     pub parent: Option<Lww<Option<TaskId>>>,
     pub recurrence: Option<Lww<Option<Recurrence>>>,
+    pub estimate: Option<Lww<Option<Estimate>>>,
     /// Whether each tag ever written is on the task.
     pub tags: BTreeMap<TagId, Lww<bool>>,
 }
@@ -91,6 +95,7 @@ impl Task {
                 scheduled_at: None,
                 parent: None,
                 recurrence: None,
+                estimate: None,
                 tags: BTreeMap::new(),
             },
         }
@@ -165,6 +170,13 @@ impl Task {
             .and_then(|recurrence| recurrence.value().as_ref())
     }
 
+    pub fn estimate(&self) -> Option<Estimate> {
+        self.registers
+            .estimate
+            .as_ref()
+            .and_then(|estimate| *estimate.value())
+    }
+
     /// Ids of the tags on the task, including tags that are deleted or not
     /// received yet.
     pub fn tag_ids(&self) -> impl Iterator<Item = TagId> + '_ {
@@ -223,6 +235,10 @@ impl Task {
                 recurrence: Some(write(&current.recurrence, recurrence.clone(), hlc)),
                 ..current.clone()
             },
+            TaskChange::Estimate(estimate) => TaskRegisters {
+                estimate: Some(write(&current.estimate, *estimate, hlc)),
+                ..current.clone()
+            },
             TaskChange::Tag { tag, tagged } => {
                 let mut tags = current.tags.clone();
                 tags.insert(*tag, write(&current.tags.get(tag).cloned(), *tagged, hlc));
@@ -250,6 +266,7 @@ impl Task {
             scheduled_at,
             parent,
             recurrence,
+            estimate,
             tags,
         } = &self.registers;
         let title = title
@@ -280,6 +297,9 @@ impl Task {
             let change = TaskChange::Recurrence(recurrence.value().clone());
             (change, recurrence.hlc())
         });
+        let estimate = estimate
+            .as_ref()
+            .map(|estimate| (TaskChange::Estimate(*estimate.value()), estimate.hlc()));
         [
             title,
             status,
@@ -290,6 +310,7 @@ impl Task {
             scheduled_at,
             parent,
             recurrence,
+            estimate,
         ]
         .into_iter()
         .flatten()
@@ -324,6 +345,7 @@ impl Task {
                 scheduled_at: join(&a.scheduled_at, &b.scheduled_at),
                 parent: join(&a.parent, &b.parent),
                 recurrence: join(&a.recurrence, &b.recurrence),
+                estimate: join(&a.estimate, &b.estimate),
                 tags: join_tags(&a.tags, &b.tags),
             },
         }
@@ -366,6 +388,10 @@ mod tests {
     fn weekly(day: u8) -> Recurrence {
         let rule = RRule::parse("FREQ=WEEKLY").unwrap();
         Recurrence::new(rule, date(day), RecurrenceBasis::Due).unwrap()
+    }
+
+    fn minutes(minutes: u32) -> Estimate {
+        Estimate::from_minutes(minutes).unwrap()
     }
 
     fn tagged(tag: TagId, tagged: bool) -> TaskChange {
@@ -437,6 +463,20 @@ mod tests {
 
         let task = task.apply(&TaskChange::Recurrence(None), at(3, B));
         assert_eq!(task.recurrence(), None);
+    }
+
+    #[test]
+    fn estimate_follows_newest_write_and_can_be_cleared() {
+        let task = Task::empty(ID);
+        assert_eq!(task.estimate(), None);
+
+        let task = task
+            .apply(&TaskChange::Estimate(Some(minutes(30))), at(2, A))
+            .apply(&TaskChange::Estimate(Some(minutes(90))), at(1, B));
+        assert_eq!(task.estimate(), Some(minutes(30)));
+
+        let task = task.apply(&TaskChange::Estimate(None), at(3, B));
+        assert_eq!(task.estimate(), None);
     }
 
     #[test]
@@ -562,6 +602,7 @@ mod tests {
             prop::option::of(0u64..3).prop_map(|time| TaskChange::ScheduledAt(time.map(Timestamp))),
             prop::option::of(0u128..3).prop_map(|id| TaskChange::Parent(id.map(TaskId))),
             prop::option::of(1u8..3).prop_map(|day| TaskChange::Recurrence(day.map(weekly))),
+            prop::option::of(1u32..3).prop_map(|time| TaskChange::Estimate(time.map(minutes))),
             (0u128..3, any::<bool>()).prop_map(|(tag, on)| tagged(TagId(tag), on)),
         ]
     }
@@ -594,6 +635,7 @@ mod tests {
             scheduled_at: Some(Lww::new(Some(Timestamp(9)), at(7, B))),
             parent: Some(Lww::new(Some(TaskId(3)), at(8, A))),
             recurrence: Some(Lww::new(Some(weekly(1)), at(8, B))),
+            estimate: Some(Lww::new(Some(minutes(25)), at(9, A))),
             tags: BTreeMap::from([(TagId(1), Lww::new(true, at(9, B)))]),
         };
 

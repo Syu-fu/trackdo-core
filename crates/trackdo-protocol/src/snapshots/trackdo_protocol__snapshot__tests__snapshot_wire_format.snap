@@ -77,6 +77,14 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
           "device": "01928f39-ffff-7abc-9def-0123456789ab"
         }
       },
+      "estimate": {
+        "value": 25,
+        "hlc": {
+          "wall_ms": 1730000001000,
+          "counter": 0,
+          "device": "01928f39-ffff-7abc-9def-0123456789ab"
+        }
+      },
       "tags": []
     },
     {
@@ -104,6 +112,7 @@ expression: "SnapshotDto::from(&Snapshot\n{\n    log_id: LOG, tasks: vec![full_t
         }
       },
       "recurrence": null,
+      "estimate": null,
       "tags": [
         {
           "tag_id": "dc59ba82-d0ee-5fec-b8e2-c6935ec3ee03",

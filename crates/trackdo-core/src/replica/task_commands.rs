@@ -3,6 +3,7 @@
 use super::{CommandError, Replica};
 use crate::date::Date;
 use crate::env::{Clock, IdGen};
+use crate::estimate::Estimate;
 use crate::note::Note;
 use crate::op::OpTarget;
 use crate::task::{TaskChange, TaskId, TaskPriority, TaskStatus};
@@ -66,6 +67,16 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     pub fn schedule(&mut self, id: TaskId, at: Option<Timestamp>) -> Result<(), CommandError> {
         self.ensure_editable(id)?;
         self.emit_task(id, vec![TaskChange::ScheduledAt(at)])
+    }
+
+    /// `None` clears the estimate.
+    pub fn set_estimate(
+        &mut self,
+        id: TaskId,
+        estimate: Option<Estimate>,
+    ) -> Result<(), CommandError> {
+        self.ensure_editable(id)?;
+        self.emit_task(id, vec![TaskChange::Estimate(estimate)])
     }
 
     /// Deletes the task together with every task below it, stopping their
@@ -248,6 +259,20 @@ mod tests {
     }
 
     #[test]
+    fn set_estimate_sets_and_clears_estimate() {
+        let mut replica = replica();
+        let id = replica.create("a").unwrap();
+        let estimate = Estimate::from_minutes(45).unwrap();
+
+        replica.set_estimate(id, Some(estimate)).unwrap();
+        assert_eq!(replica.task(id).unwrap().estimate(), Some(estimate));
+
+        replica.set_estimate(id, None).unwrap();
+        assert_eq!(replica.task(id).unwrap().estimate(), None);
+        assert_eq!(changes(&replica).last(), Some(&TaskChange::Estimate(None)));
+    }
+
+    #[test]
     fn schedule_sets_and_clears_scheduled_time() {
         let mut replica = replica();
         let id = replica.create("a").unwrap();
@@ -348,6 +373,10 @@ mod tests {
         assert_eq!(replica.set_note(id, "a"), Err(CommandError::Deleted(id)));
         assert_eq!(replica.set_due(id, None), Err(CommandError::Deleted(id)));
         assert_eq!(replica.schedule(id, None), Err(CommandError::Deleted(id)));
+        assert_eq!(
+            replica.set_estimate(id, None),
+            Err(CommandError::Deleted(id))
+        );
         assert_eq!(replica.pending_ops().len(), pending_before);
     }
 }

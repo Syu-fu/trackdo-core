@@ -11,6 +11,7 @@ use proptest::prelude::*;
 
 use trackdo_core::date::Date;
 use trackdo_core::env::{Clock, IdGen};
+use trackdo_core::estimate::Estimate;
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::lww::Lww;
 use trackdo_core::op::{LogId, Op, OpId, OpTarget, Seq};
@@ -365,6 +366,8 @@ enum Edit {
     Schedule(usize, Option<u64>),
     /// A rule and its basis, or `None` to stop repeating.
     Repeat(usize, Option<(&'static str, RecurrenceBasis)>),
+    /// Minutes, or `None` to clear the estimate.
+    SetEstimate(usize, Option<u32>),
     Start(usize),
     Stop(usize),
     /// Start and optional stop, as milliseconds before now.
@@ -433,6 +436,8 @@ fn edit() -> impl Strategy<Value = Edit> {
             prop::sample::select(vec![RecurrenceBasis::Due, RecurrenceBasis::Completion]),
         )))
             .prop_map(|(i, repeat)| Edit::Repeat(i, repeat)),
+        1 => (i(), prop::option::of(prop::sample::select(vec![15u32, 30, 90])))
+            .prop_map(|(i, minutes)| Edit::SetEstimate(i, minutes)),
         3 => i().prop_map(Edit::Start),
         1 => i().prop_map(Edit::Stop),
         1 => (i(), ago(), prop::option::of(ago()))
@@ -496,6 +501,10 @@ fn run_edit(node: &mut Node, edit: &Edit) {
             on(node, task, |r, id| r.set_recurrence(id, rule, *basis))
         }
         Edit::Repeat(_, None) => on(node, task, Replica::clear_recurrence),
+        Edit::SetEstimate(_, minutes) => {
+            let estimate = minutes.map(|minutes| Estimate::from_minutes(minutes).unwrap());
+            on(node, task, |r, id| r.set_estimate(id, estimate))
+        }
         Edit::SetDue(_, day) => {
             let due = day.map(|day| Date::new(2026, 10, day).unwrap());
             on(node, task, |r, id| r.set_due(id, due))
@@ -546,6 +555,7 @@ fn edit_index(edit: &Edit) -> usize {
         | Edit::SetDue(i, _)
         | Edit::Schedule(i, _)
         | Edit::Repeat(i, _)
+        | Edit::SetEstimate(i, _)
         | Edit::Start(i)
         | Edit::Stop(i)
         | Edit::SetTimes(i, ..)
@@ -619,6 +629,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> + '_ {
         task.registers().scheduled_at.as_ref().map(Lww::hlc),
         task.registers().parent.as_ref().map(Lww::hlc),
         task.registers().recurrence.as_ref().map(Lww::hlc),
+        task.registers().estimate.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()

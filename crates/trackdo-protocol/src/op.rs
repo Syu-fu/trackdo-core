@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use trackdo_core::estimate::Estimate;
 use trackdo_core::hlc::{DeviceId, Hlc};
 use trackdo_core::op::{Op, OpId, OpTarget};
 use trackdo_core::recurrence::Recurrence;
@@ -63,6 +64,8 @@ pub enum TaskChangeDto {
     Parent(Option<Uuid>),
     /// `null` stops the task repeating.
     Recurrence(Option<RecurrenceDto>),
+    /// Whole minutes, or `null` to clear the estimate.
+    Estimate(Option<u32>),
     /// Adds (`tagged: true`) or removes one tag.
     Tag {
         tag_id: Uuid,
@@ -202,6 +205,7 @@ impl From<&TaskChange> for TaskChangeDto {
             TaskChange::Recurrence(recurrence) => {
                 Self::Recurrence(recurrence.as_ref().map(RecurrenceDto::from))
             }
+            TaskChange::Estimate(estimate) => Self::Estimate(estimate.map(Estimate::minutes)),
             TaskChange::Tag { tag, tagged } => Self::Tag {
                 tag_id: Uuid::from_u128(tag.0),
                 tagged: *tagged,
@@ -229,6 +233,9 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             }
             TaskChangeDto::Recurrence(recurrence) => Ok(Self::Recurrence(
                 recurrence.map(Recurrence::try_from).transpose()?,
+            )),
+            TaskChangeDto::Estimate(minutes) => Ok(Self::Estimate(
+                minutes.map(Estimate::from_minutes).transpose()?,
             )),
             TaskChangeDto::Tag { tag_id, tagged } => Ok(Self::Tag {
                 tag: TagId(tag_id.as_u128()),
@@ -305,6 +312,7 @@ pub(crate) mod tests {
     use super::*;
     use proptest::prelude::*;
     use trackdo_core::date::Date;
+    use trackdo_core::estimate::{Estimate, EstimateError, MAX_ESTIMATE_MINUTES};
     use trackdo_core::note::Note;
     use trackdo_core::title::{Title, TitleError};
 
@@ -405,6 +413,28 @@ pub(crate) mod tests {
     #[test]
     fn cleared_recurrence_op_wire_format() {
         insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Recurrence(None))));
+    }
+
+    #[test]
+    fn estimate_op_wire_format() {
+        let estimate = Estimate::from_minutes(90).unwrap();
+
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Estimate(Some(estimate)))));
+    }
+
+    #[test]
+    fn cleared_estimate_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Estimate(None))));
+    }
+
+    #[test]
+    fn rejects_invalid_estimate() {
+        let json = wire(serde_json::json!({ "field": "estimate", "value": 0 }));
+
+        assert_eq!(
+            decode(json),
+            Err(ProtocolError::InvalidEstimate(EstimateError::Zero))
+        );
     }
 
     #[test]
@@ -603,6 +633,10 @@ pub(crate) mod tests {
             prop::option::of(any::<u128>().prop_map(TaskId)).prop_map(TaskChange::Parent),
             prop::option::of(crate::recurrence::tests::any_recurrence())
                 .prop_map(TaskChange::Recurrence),
+            prop::option::of(
+                (1..=MAX_ESTIMATE_MINUTES).prop_map(|m| Estimate::from_minutes(m).unwrap())
+            )
+            .prop_map(TaskChange::Estimate),
             (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
                 tag: TagId(tag),
                 tagged
