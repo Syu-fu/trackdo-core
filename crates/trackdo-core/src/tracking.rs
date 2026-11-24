@@ -68,6 +68,16 @@ impl<'a> TimeEntryView<'a> {
         // so measuring that entry "up to" the stop gives its duration.
         self.entry.duration(self.derived_stop.unwrap_or(now))
     }
+
+    /// Measured time after `since`, counting up to `now` while running.
+    pub fn duration_since(&self, since: Timestamp, now: Timestamp) -> Duration {
+        let skipped = self
+            .started_at()
+            .map_or(Duration::ZERO, |Timestamp(started)| {
+                Duration::from_millis(since.0.saturating_sub(started))
+            });
+        self.duration(now).saturating_sub(skipped)
+    }
 }
 
 /// Stop times for running entries that must be treated as stopped:

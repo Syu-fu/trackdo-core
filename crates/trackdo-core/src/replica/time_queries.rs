@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::Replica;
 use crate::env::{Clock, IdGen};
-use crate::task::TaskId;
+use crate::task::{Task, TaskId};
 use crate::time_entry::{TimeEntry, Timestamp};
 use crate::tracking::{TimeEntryView, derived_stops};
 
@@ -46,6 +46,24 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
             .sum()
     }
 
+    /// Time spent on `task_id` since its current occurrence began, counting a
+    /// running timer up to `now`. For a task never completed while repeating,
+    /// this is its total. Zero for a task that counts as deleted.
+    pub fn occurrence_total(&self, task_id: TaskId, now: Timestamp) -> Duration {
+        if self.hierarchy().is_deleted(task_id) {
+            return Duration::ZERO;
+        }
+        let since = self
+            .tasks
+            .get(&task_id)
+            .and_then(Task::occurrence_start)
+            .unwrap_or(Timestamp(0));
+        self.entries_for(task_id)
+            .iter()
+            .map(|view| view.duration_since(since, now))
+            .sum()
+    }
+
     /// Views of non-deleted entries that `keep`, ordered by start time.
     fn views(&self, keep: impl Fn(&TimeEntry) -> bool) -> Vec<TimeEntryView<'_>> {
         let derived = derived_stops(&self.tasks, &self.entries);
@@ -66,6 +84,7 @@ mod tests {
     use super::*;
     use crate::hlc::Hlc;
     use crate::op::{Op, OpId, Seq};
+    use crate::recurrence::RecurrenceBasis;
     use crate::time_entry::{TimeEntryChange, TimeEntryId};
 
     fn ms(millis: u64) -> Timestamp {
@@ -201,6 +220,61 @@ mod tests {
         assert_eq!(replica.task_total(task, ms(NOW)), Duration::ZERO);
         assert_eq!(replica.entries_for(task).len(), 1);
         assert_eq!(ids(&replica.tracked_entries()), vec![counted]);
+    }
+
+    /// A task repeating daily with 300ms tracked before a timer ran from
+    /// `NOW` until it was completed at 1_600, then 200ms more, of which 100ms
+    /// after the completion, and a timer running since 2_000.
+    fn repeated_task() -> (TestReplica, TaskId) {
+        let mut replica = replica();
+        let task = replica.create("stretch").unwrap();
+        replica
+            .set_recurrence(task, "FREQ=DAILY", RecurrenceBasis::Due)
+            .unwrap();
+        replica.add_entry(task, ms(100), ms(400)).unwrap();
+        replica.start(task).unwrap();
+        set_now(&mut replica, 1_600);
+        replica.complete(task).unwrap();
+        set_now(&mut replica, 2_000);
+        replica.add_entry(task, ms(1_500), ms(1_700)).unwrap();
+        replica.start(task).unwrap();
+        (replica, task)
+    }
+
+    #[test]
+    fn occurrence_total_counts_time_since_the_last_completion() {
+        let (replica, task) = repeated_task();
+
+        assert_eq!(
+            replica.occurrence_total(task, ms(2_050)),
+            Duration::from_millis(100 + 50)
+        );
+        assert_eq!(
+            replica.task_total(task, ms(2_050)),
+            Duration::from_millis(300 + 600 + 200 + 50)
+        );
+    }
+
+    #[test]
+    fn occurrence_total_of_a_task_never_repeated_is_its_total() {
+        let mut replica = replica();
+        let task = replica.create("work").unwrap();
+        replica.add_entry(task, ms(100), ms(400)).unwrap();
+        replica.complete(task).unwrap();
+
+        assert_eq!(
+            replica.occurrence_total(task, ms(NOW)),
+            Duration::from_millis(300)
+        );
+    }
+
+    #[test]
+    fn occurrence_total_of_a_deleted_task_is_zero() {
+        let (mut replica, task) = repeated_task();
+
+        replica.delete(task).unwrap();
+
+        assert_eq!(replica.occurrence_total(task, ms(2_050)), Duration::ZERO);
     }
 
     #[test]

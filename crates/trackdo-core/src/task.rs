@@ -48,6 +48,9 @@ pub enum TaskChange {
     Recurrence(Option<Recurrence>),
     /// How long the task is planned to take; `None` clears the estimate.
     Estimate(Option<Estimate>),
+    /// When the current occurrence of a repeating task began: the moment the
+    /// previous one was completed.
+    OccurrenceStart(Timestamp),
     /// Adds or removes one tag, leaving the others as they are.
     Tag {
         tag: TagId,
@@ -70,6 +73,7 @@ pub struct TaskRegisters {
     pub parent: Option<Lww<Option<TaskId>>>,
     pub recurrence: Option<Lww<Option<Recurrence>>>,
     pub estimate: Option<Lww<Option<Estimate>>>,
+    pub occurrence_start: Option<Lww<Timestamp>>,
     /// Whether each tag ever written is on the task.
     pub tags: BTreeMap<TagId, Lww<bool>>,
 }
@@ -96,6 +100,7 @@ impl Task {
                 parent: None,
                 recurrence: None,
                 estimate: None,
+                occurrence_start: None,
                 tags: BTreeMap::new(),
             },
         }
@@ -177,6 +182,14 @@ impl Task {
             .and_then(|estimate| *estimate.value())
     }
 
+    /// `None` until a repeating task has been completed once.
+    pub fn occurrence_start(&self) -> Option<Timestamp> {
+        self.registers
+            .occurrence_start
+            .as_ref()
+            .map(|start| *start.value())
+    }
+
     /// Ids of the tags on the task, including tags that are deleted or not
     /// received yet.
     pub fn tag_ids(&self) -> impl Iterator<Item = TagId> + '_ {
@@ -239,6 +252,10 @@ impl Task {
                 estimate: Some(write(&current.estimate, *estimate, hlc)),
                 ..current.clone()
             },
+            TaskChange::OccurrenceStart(start) => TaskRegisters {
+                occurrence_start: Some(write(&current.occurrence_start, *start, hlc)),
+                ..current.clone()
+            },
             TaskChange::Tag { tag, tagged } => {
                 let mut tags = current.tags.clone();
                 tags.insert(*tag, write(&current.tags.get(tag).cloned(), *tagged, hlc));
@@ -267,6 +284,7 @@ impl Task {
             parent,
             recurrence,
             estimate,
+            occurrence_start,
             tags,
         } = &self.registers;
         let title = title
@@ -300,6 +318,9 @@ impl Task {
         let estimate = estimate
             .as_ref()
             .map(|estimate| (TaskChange::Estimate(*estimate.value()), estimate.hlc()));
+        let occurrence_start = occurrence_start
+            .as_ref()
+            .map(|start| (TaskChange::OccurrenceStart(*start.value()), start.hlc()));
         [
             title,
             status,
@@ -311,6 +332,7 @@ impl Task {
             parent,
             recurrence,
             estimate,
+            occurrence_start,
         ]
         .into_iter()
         .flatten()
@@ -346,6 +368,7 @@ impl Task {
                 parent: join(&a.parent, &b.parent),
                 recurrence: join(&a.recurrence, &b.recurrence),
                 estimate: join(&a.estimate, &b.estimate),
+                occurrence_start: join(&a.occurrence_start, &b.occurrence_start),
                 tags: join_tags(&a.tags, &b.tags),
             },
         }
@@ -480,6 +503,18 @@ mod tests {
     }
 
     #[test]
+    fn occurrence_start_follows_newest_write() {
+        let task = Task::empty(ID);
+        assert_eq!(task.occurrence_start(), None);
+
+        let task = task
+            .apply(&TaskChange::OccurrenceStart(Timestamp(500)), at(2, A))
+            .apply(&TaskChange::OccurrenceStart(Timestamp(900)), at(1, B));
+
+        assert_eq!(task.occurrence_start(), Some(Timestamp(500)));
+    }
+
+    #[test]
     fn due_date_follows_newest_write_and_can_be_cleared() {
         let task = Task::empty(ID);
         assert_eq!(task.due(), None);
@@ -603,6 +638,7 @@ mod tests {
             prop::option::of(0u128..3).prop_map(|id| TaskChange::Parent(id.map(TaskId))),
             prop::option::of(1u8..3).prop_map(|day| TaskChange::Recurrence(day.map(weekly))),
             prop::option::of(1u32..3).prop_map(|time| TaskChange::Estimate(time.map(minutes))),
+            (0u64..3).prop_map(|time| TaskChange::OccurrenceStart(Timestamp(time))),
             (0u128..3, any::<bool>()).prop_map(|(tag, on)| tagged(TagId(tag), on)),
         ]
     }
@@ -636,6 +672,7 @@ mod tests {
             parent: Some(Lww::new(Some(TaskId(3)), at(8, A))),
             recurrence: Some(Lww::new(Some(weekly(1)), at(8, B))),
             estimate: Some(Lww::new(Some(minutes(25)), at(9, A))),
+            occurrence_start: Some(Lww::new(Timestamp(11), at(10, B))),
             tags: BTreeMap::from([(TagId(1), Lww::new(true, at(9, B)))]),
         };
 

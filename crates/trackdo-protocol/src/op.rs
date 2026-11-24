@@ -66,6 +66,9 @@ pub enum TaskChangeDto {
     Recurrence(Option<RecurrenceDto>),
     /// Whole minutes, or `null` to clear the estimate.
     Estimate(Option<u32>),
+    /// Unix milliseconds at which the current occurrence of a repeating task
+    /// began.
+    OccurrenceStart(u64),
     /// Adds (`tagged: true`) or removes one tag.
     Tag {
         tag_id: Uuid,
@@ -206,6 +209,7 @@ impl From<&TaskChange> for TaskChangeDto {
                 Self::Recurrence(recurrence.as_ref().map(RecurrenceDto::from))
             }
             TaskChange::Estimate(estimate) => Self::Estimate(estimate.map(Estimate::minutes)),
+            TaskChange::OccurrenceStart(Timestamp(start)) => Self::OccurrenceStart(*start),
             TaskChange::Tag { tag, tagged } => Self::Tag {
                 tag_id: Uuid::from_u128(tag.0),
                 tagged: *tagged,
@@ -237,6 +241,7 @@ impl TryFrom<TaskChangeDto> for TaskChange {
             TaskChangeDto::Estimate(minutes) => Ok(Self::Estimate(
                 minutes.map(Estimate::from_minutes).transpose()?,
             )),
+            TaskChangeDto::OccurrenceStart(start) => Ok(Self::OccurrenceStart(Timestamp(start))),
             TaskChangeDto::Tag { tag_id, tagged } => Ok(Self::Tag {
                 tag: TagId(tag_id.as_u128()),
                 tagged,
@@ -425,6 +430,13 @@ pub(crate) mod tests {
     #[test]
     fn cleared_estimate_op_wire_format() {
         insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::Estimate(None))));
+    }
+
+    #[test]
+    fn occurrence_start_op_wire_format() {
+        insta::assert_json_snapshot!(OpDto::from(&op(TaskChange::OccurrenceStart(Timestamp(
+            1_730_100_000_000
+        )))));
     }
 
     #[test]
@@ -637,6 +649,7 @@ pub(crate) mod tests {
                 (1..=MAX_ESTIMATE_MINUTES).prop_map(|m| Estimate::from_minutes(m).unwrap())
             )
             .prop_map(TaskChange::Estimate),
+            any::<u64>().prop_map(|start| TaskChange::OccurrenceStart(Timestamp(start))),
             (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
                 tag: TagId(tag),
                 tagged

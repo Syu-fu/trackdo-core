@@ -33,7 +33,8 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
     ///
     /// A repeating task becomes due on its next occurrence and stays to do,
     /// unscheduled, and the completed tasks below it are reopened, so a
-    /// checklist under it starts over. Once the rule has ended, the task is
+    /// checklist under it starts over. The next occurrence begins now, so
+    /// time spent on it is counted apart from the earlier ones. Once the rule has ended, the task is
     /// completed like any other.
     pub(super) fn completion(&self, id: TaskId) -> Vec<OpTarget> {
         let task = &self.tasks[&id];
@@ -46,7 +47,10 @@ impl<C: Clock, G: IdGen> Replica<C, G> {
                 change: TaskChange::Status(TaskStatus::Done),
             }];
         };
-        let mut changes = vec![TaskChange::Due(Some(next))];
+        let mut changes = vec![
+            TaskChange::Due(Some(next)),
+            TaskChange::OccurrenceStart(self.now()),
+        ];
         if task.scheduled_at().is_some() {
             changes.push(TaskChange::ScheduledAt(None));
         }
@@ -227,9 +231,13 @@ mod tests {
         let task = replica.task(id).unwrap();
         assert_eq!(task.due(), Some(day(11, 9)));
         assert_eq!(task.status(), TaskStatus::Todo);
+        let now = Timestamp(20_760 * MILLIS_PER_DAY + 1);
         assert_eq!(
             task_changes(&replica, before),
-            [(id, TaskChange::Due(Some(day(11, 9))))]
+            [
+                (id, TaskChange::Due(Some(day(11, 9)))),
+                (id, TaskChange::OccurrenceStart(now)),
+            ]
         );
     }
 
@@ -281,9 +289,14 @@ mod tests {
         assert_eq!(replica.task(id).unwrap().due(), Some(day(11, 4)));
         assert_eq!(replica.task(id).unwrap().status(), TaskStatus::Todo);
 
+        set_now(&mut replica, 20_761 * MILLIS_PER_DAY);
         replica.complete(id).unwrap();
         assert_eq!(replica.task(id).unwrap().due(), Some(day(11, 4)));
         assert_eq!(replica.task(id).unwrap().status(), TaskStatus::Done);
+        assert_eq!(
+            replica.task(id).unwrap().occurrence_start(),
+            Some(Timestamp(20_760 * MILLIS_PER_DAY))
+        );
     }
 
     #[test]

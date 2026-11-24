@@ -630,6 +630,7 @@ fn task_hlcs(task: &Task) -> impl Iterator<Item = Hlc> + '_ {
         task.registers().parent.as_ref().map(Lww::hlc),
         task.registers().recurrence.as_ref().map(Lww::hlc),
         task.registers().estimate.as_ref().map(Lww::hlc),
+        task.registers().occurrence_start.as_ref().map(Lww::hlc),
     ]
     .into_iter()
     .flatten()

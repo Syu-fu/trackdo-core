@@ -60,6 +60,9 @@ pub struct TaskDto {
     /// Whole minutes; a `null` value means the estimate was cleared.
     #[serde(default)]
     pub estimate: Option<RegisterDto<Option<u32>>>,
+    /// Unix milliseconds.
+    #[serde(default)]
+    pub occurrence_start: Option<RegisterDto<u64>>,
     /// One register per tag ever written to the task, ordered by tag id.
     #[serde(default)]
     pub tags: Vec<TaskTagDto>,
@@ -180,6 +183,10 @@ impl From<&Task> for TaskDto {
                 .estimate
                 .as_ref()
                 .map(|reg| encode(reg, |estimate| estimate.map(Estimate::minutes))),
+            occurrence_start: registers
+                .occurrence_start
+                .as_ref()
+                .map(|reg| encode(reg, |Timestamp(start)| *start)),
             tags: registers
                 .tags
                 .iter()
@@ -243,6 +250,7 @@ impl TryFrom<TaskDto> for Task {
                     .map(|reg| decode(reg, |parent| parent.map(|parent| TaskId(parent.as_u128())))),
                 recurrence,
                 estimate,
+                occurrence_start: dto.occurrence_start.map(|reg| decode(reg, Timestamp)),
                 tags: decode_task_tags(dto.tags),
             },
         ))
@@ -363,6 +371,10 @@ pub(crate) mod tests {
             )
             .apply(
                 &TaskChange::Estimate(Some(Estimate::from_minutes(25).unwrap())),
+                at(1_730_000_001_000),
+            )
+            .apply(
+                &TaskChange::OccurrenceStart(Timestamp(1_730_000_000_000)),
                 at(1_730_000_001_000),
             )
     }
@@ -491,6 +503,7 @@ pub(crate) mod tests {
         assert_eq!(task.registers().parent, None);
         assert_eq!(task.registers().recurrence, None);
         assert_eq!(task.registers().estimate, None);
+        assert_eq!(task.registers().occurrence_start, None);
         assert!(task.registers().tags.is_empty());
     }
 
@@ -561,6 +574,7 @@ pub(crate) mod tests {
                 (1..=MAX_ESTIMATE_MINUTES).prop_map(|m| Estimate::from_minutes(m).unwrap())
             )
             .prop_map(TaskChange::Estimate),
+            any::<u64>().prop_map(|start| TaskChange::OccurrenceStart(Timestamp(start))),
             (any::<u128>(), any::<bool>()).prop_map(|(tag, tagged)| TaskChange::Tag {
                 tag: TagId(tag),
                 tagged
