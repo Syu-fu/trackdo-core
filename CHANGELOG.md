@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Time estimates, set and cleared with `Replica::set_estimate`. An
+  `Estimate` is a whole number of minutes, from one to 60,000, and is read
+  with `Task::estimate`, to compare with the time spent on the task.
+- `Replica::occurrence_total`, the time spent on a repeating task since its
+  current occurrence began, apart from earlier occurrences. Completing a
+  repeating task records when the next occurrence began, read with
+  `Task::occurrence_start`. For a task never completed while repeating, it
+  equals `task_total`.
+- `TimeEntryView::duration_since`, the measured time after a given instant.
+- Stored states written by earlier versions, whose tasks lack an estimate
+  or an occurrence start, still load.
+
+### Changed
+
+- **Breaking:** `TaskChange` has the `Estimate` and `OccurrenceStart`
+  variants, and `TaskRegisters` the `estimate` and `occurrence_start`
+  fields.
+- **Breaking:** `PROTOCOL_VERSION` is 7, as operations may now carry
+  estimates and occurrence starts that older clients cannot decode.
+
 ## [0.6.0] - 2026-11-03
 
 ### Added
